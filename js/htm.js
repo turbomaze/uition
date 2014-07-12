@@ -30,7 +30,7 @@ var sparsity = 0.05;
 /*********************
  * working variables */
 var inpSize;
-var columns;
+var brain;
 
 /******************
  * work functions */
@@ -51,16 +51,13 @@ function initHTM() {
         console.log(transformation+' <---> '+data.points[ai]);
     }
 
-    //initialize the columns
-    columns = [];
-    for (var ai = 0; ai < numCols; ai++) {
-        columns.push(new Column(ai, inpSize));
-    }
-
+    //initialize the layer of cells
+    brain = new Layer(inpSize);
+    
     //get the SDRs of the inputs by applying an overlap threshold
     //to each of the columns
     for (var ai = 0; ai < data.points.length; ai++) {
-        var sdr = getSDR(data.encodedPoints[ai]);
+        var sdr = brain.getSDR(data.encodedPoints[ai]);
         console.log(sdr+' <---> '+data.encodedPoints[ai]);
     }
 }
@@ -85,17 +82,24 @@ function encode(type, value) {
     }
 }
 
-function getOverlaps(inp) {
+/***********
+ * objects */
+function Layer(s) { //s is the length of the transformed inputs in bits
+    this.columns = [];
+    for (var ai = 0; ai < numCols; ai++) {
+        this.columns.push(new Column(ai, s));
+    }
+}
+Layer.prototype.getOverlaps = function(inp) {
     var overlaps = [];
-    for (var ai = 0; ai < columns.length; ai++) {
+    for (var ai = 0; ai < this.columns.length; ai++) {
         overlaps.push(
-            columns[ai].getOverlap(inp)
+            this.columns[ai].getOverlap(inp)
         );
     }
     return overlaps;
-}
-
-function getBestThreshold(overlaps) {
+};
+Layer.prototype.getBestThreshold = function(overlaps) {
     var desNumSelections = Math.round(sparsity*numCols);
     var bestErr = Infinity;
     var bestThresh = 0;
@@ -110,21 +114,18 @@ function getBestThreshold(overlaps) {
         }
     }
     return bestThresh;
-}
-
-function getSDR(inp) {
+};
+Layer.prototype.getSDR = function(inp) {
     var sdr = '';
-    var overlaps = getOverlaps(inp);
-    var bestThresh = getBestThreshold(overlaps);
+    var overlaps = this.getOverlaps(inp);
+    var bestThresh = this.getBestThreshold(overlaps);
     for (var ai = 0; ai < overlaps.length; ai++) {
         if (overlaps[ai] >= bestThresh) sdr += '1';
         else sdr += '0';
     }
     return sdr;
-}
+};
 
-/***********
- * objects */
 function Column(pos, s) { //s is the length of the transformed inputs in bits
     this.bitIndices = [];
     this.permanances = [];
@@ -161,18 +162,27 @@ function $s(id) { //for convenience
     if (id.charAt(0) !== '#') return false;
     return document.getElementById(id.substring(1));
 }
-
 function getRandInt(low, high) { //output is in [low, high)
     return Math.floor(grf(low, high));
 }
-
 function grf(low, high) { //get a random float in [low, high)
     return low + Math.random()*(high-low);
 }
-
 function round(n, places) {
     var mult = Math.pow(10, places);
     return Math.round(mult*n)/mult;
 }
 
 window.addEventListener('load', initHTM);
+
+
+
+
+
+
+
+
+
+
+
+
