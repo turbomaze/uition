@@ -20,20 +20,28 @@ var encoderParams = {
 };
 
 var sparsity = 0.02;
-var numCols = 2048;
+var numCols = 2304; //48*48
 var cellsPerCol = 1;
-var numPotSyn = 60;
-var permThreshold = 0.3;
+var numPotSyn = 67;
+var permThreshold = 0.2;
 var incPerm = 0.1;
 var decPerm = 0.06;
-var minOverlap = 10;
+var minOverlap = 11;
 var slidingWidth = 1000;
+
+var sdrRad = 5;
+var sdrBrdr = 4;
+var dim = Math.sqrt(numCols);
+var dims = [dim*2*sdrRad+(dim-1)*sdrBrdr, dim*2*sdrRad+(dim-1)*sdrBrdr];
 
 /*************
  * constants */
 
 /*********************
  * working variables */
+var canvas;
+var ctx;
+
 var data;
 var inpSize;
 var brain;
@@ -42,6 +50,12 @@ var brain;
  * work functions */
 function initHTM() {
     var start = +new Date();
+
+    //canvas stuff
+    canvas = $s('#canvas');
+    canvas.width = dims[0];
+    canvas.height = dims[1];
+    ctx = canvas.getContext('2d');
 
     //the data that will be streamed to the HCM
     data = {
@@ -63,15 +77,32 @@ function initHTM() {
     //initialize the layer of cells
     brain = new Layer(inpSize);
 
-    //get the SDRs of the inputs by applying an overlap threshold
-    //to each of the columns
-    for (var ai = 0; ai < data.points.length; ai++) {
+    //get the SDRs of the inputs and render them to the canvas
+    var ai = 0;
+    var asyncLoopDataPts = function(callback) {
+        //inner loop work
         var sdr = brain.sense(data.encodedPoints[ai]);
-        if (ai === 0) console.log('Input 0: '+sdr);
-    }
+        renderSDR(sdr);
+        $s('#time').innerHTML = ai;
+
+        //increment and call the next iteration
+        ai += 1;
+        setTimeout(function() { callback(true); }, 6); 
+    };
+    asyncLoop(data.points.length,
+        function(loop) {
+            asyncLoopDataPts(function(keepGoing) {
+                if (keepGoing) loop.next();
+                else loop.break();
+            })
+        }, 
+        function() { /* inner loop finished */ }
+    );
 
     var duration = +new Date() - start;
-    console.log('Completed in '+duration+'ms.');
+    console.log(
+        'Completed in '+duration+'ms. (not accurate to to asynchronicity)'
+    );
 }
 
 function encode(type, value) {
@@ -91,6 +122,22 @@ function encode(type, value) {
         default:
             var out = [false];
             return out;
+    }
+}
+
+function renderSDR(sdr) {
+    //dampen old activations
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    //draw new ones
+    var sdrIncrFactor = (2*sdrRad+sdrBrdr);
+    for (var ai = 0; ai < sdr.length; ai++) {
+        var y = Math.floor(ai/dim);
+            y = sdrIncrFactor*y + sdrRad;
+        var x = ai%dim;
+            x = sdrIncrFactor*x + sdrRad;
+        if (sdr[ai]) drawPoint(x, y, sdrRad, '#B1E66C');
     }
 }
 
@@ -128,7 +175,7 @@ Layer.prototype.getSDR = function(inp) {
     return sdr;
 };
 Layer.prototype.sense = function(inp) {
-    var sdr = '';
+    var sdr = [];
 
     //activate the correct columns and collect data about it
     var overlaps = this.getOverlaps(inp);
@@ -176,7 +223,7 @@ Layer.prototype.sense = function(inp) {
             col.ovlpHistory.shift();
         }
 
-        sdr += actv;
+        sdr.push(col.state === 1 ? true : false);
     }
 
     //boost columns based on activity
@@ -232,6 +279,42 @@ Column.prototype.dopePermanences = function(amt) {
 
 /********************
  * helper functions */
+function drawPoint(x, y, r, color) {
+	r = r || 2
+	color = color || 'rgba(0, 0, 0, 1)'
+	
+	ctx.fillStyle = color;
+	ctx.beginPath();
+	ctx.arc(x, y, r, 0, 2*Math.PI, true);
+	ctx.closePath();
+	ctx.fill();
+}
+//stolen from http://stackoverflow.com/questions/4288759/asynchronous-for-cycle-in-javascript
+function asyncLoop(iterations, func, callback) {
+    var index = 0;
+    var done = false;
+    var loop = {
+        next: function() {
+            if (done) return;
+            if (index < iterations) {
+                index += 1;
+                func(loop);
+            } else {
+                done = true;
+                if (callback) callback();
+            }
+        },
+        iteration: function() {
+            return index - 1;
+        },
+        break: function() {
+            done = true;
+            if (callback) callback();
+        }
+    };
+    loop.next();
+    return loop;
+}
 function $s(id) { //for convenience
     if (id.charAt(0) !== '#') return false;
     return document.getElementById(id.substring(1));
