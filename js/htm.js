@@ -82,14 +82,14 @@ function encode(type, value) {
             var bucket = Math.floor(buckets*(value-p.min)/(p.max-p.min));
             bucket = Math.min(Math.max(0, bucket), buckets-1);
 
-            var out = '';
-            for (var ai = 0; ai < bucket; ai++) out += '0';
-            for (var ai = 0; ai < p.w; ai++) out += '1';
-            for (var ai = 0; ai < p.n-(bucket+p.w); ai++) out += '0';
+            var out = [];
+            for (var ai = 0; ai < bucket; ai++) out.push(false);
+            for (var ai = 0; ai < p.w; ai++) out.push(true);
+            for (var ai = 0; ai < p.n-(bucket+p.w); ai++) out.push(false);
 
             return out;
         default:
-            var out = '0';
+            var out = [false];
             return out;
     }
 }
@@ -142,10 +142,10 @@ Layer.prototype.sense = function(inp) {
             //adjust the permanences because it's active
             for (var bi = 0; bi < col.bitIndices.length; bi++) {
                 if (col.permanences[ai] >= permThreshold) { //connected
-                    if (inp.charAt(col.bitIndices[ai]) === '1') { //and one?
+                    if (inp[col.bitIndices[ai]]) { //and input bit is true?
                         col.permanences[ai] += incPerm; //strengthen the conn.
                         if (col.permanences[ai] > 1) col.permanences[ai] = 1;
-                    } else { //connected and zero?
+                    } else { //connected and false?
                         col.permanences[ai] -= decPerm; //weaken the conn.
                         if (col.permanences[ai] < 0) col.permanences[ai] = 0;
                     }
@@ -216,7 +216,7 @@ Column.prototype.getOverlap = function(inp) {
     var matching = 0;
     for (var ai = 0; ai < this.bitIndices.length; ai++) {
         if (this.permanences[ai] >= permThreshold) {
-            if (inp.charAt(this.bitIndices[ai]) === '1') matching++; 
+            if (inp[this.bitIndices[ai]]) matching++; 
         }
     }
 
