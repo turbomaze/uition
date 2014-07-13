@@ -12,17 +12,20 @@
  * config */
 var encoderParams = {
     scalar: {
-        n: 11,
-        w: 6,
-        min: 0,
-        max: 150
+        n: 121,
+        w: 21,
+        min: -1,
+        max: 1
     }
 };
-var numCols = 64;
-var potRadius = 2;
-var potPct = 0.5;
+
+var sparsity = 0.02;
+var numCols = 2048;
+var cellsPerCol = 1;
+var numPotSyn = 21;
 var permThreshold = 0.3;
-var sparsity = 0.05;
+var minOverlap = 2;
+var slidingWidth = 1000;
 
 /*************
  * constants */
@@ -35,31 +38,37 @@ var brain;
 /******************
  * work functions */
 function initHTM() {
+    var start = +new Date();
+
     //the data that will be streamed to the HCM
     var data = {
         type: 'scalar',
-        points: [10, 55, 31, 101, 79, 146, 92, 140, 58, 42, 112, 3, 68],
-        //cont.  53, 30, 122, 89, 129
+        points: [],
         encodedPoints: []
     };
+    for (var ai = 0; ai < 1000; ai++) { //sine wave
+        data.points.push(Math.sin(ai*Math.PI/(30+Math.E)));
+    }
 
     //encode all the data points
     for (var ai = 0; ai < data.points.length; ai++) {
         var transformation = encode(data.type, data.points[ai]);
         data.encodedPoints.push(transformation);
         inpSize = transformation.length;
-        console.log(transformation+' <---> '+data.points[ai]);
     }
 
     //initialize the layer of cells
     brain = new Layer(inpSize);
-    
+
     //get the SDRs of the inputs by applying an overlap threshold
     //to each of the columns
     for (var ai = 0; ai < data.points.length; ai++) {
         var sdr = brain.getSDR(data.encodedPoints[ai]);
-        console.log(sdr+' <---> '+data.encodedPoints[ai]);
+        if (ai === 0) console.log('Input 0: '+sdr);
     }
+
+    var duration = +new Date() - start;
+    console.log('Completed in '+duration+'ms.');
 }
 
 function encode(type, value) {
@@ -99,61 +108,111 @@ Layer.prototype.getOverlaps = function(inp) {
     }
     return overlaps;
 };
-Layer.prototype.getBestThreshold = function(overlaps) {
-    var desNumSelections = Math.round(sparsity*numCols);
-    var bestErr = Infinity;
-    var bestThresh = 0;
-    for (var ti = 1; ti < 1+2*potRadius; ti++) {
-        var numPassing = overlaps.filter(function(o) {
-            return o >= ti;
-        }).length;
-        var err = Math.abs((numPassing-desNumSelections)/desNumSelections);
-        if (err < bestErr) {
-            bestErr = err;
-            bestThresh = ti;
-        }
-    }
-    return bestThresh;
+Layer.prototype.getOvlpThreshold = function(overlaps) {
+    var bkp = overlaps.slice();
+    bkp.sort(function(a, b) { return b - a; });
+    var k = Math.round(0.75*sparsity*numCols); //good estimate of the best
+    return bkp[k];
 };
 Layer.prototype.getSDR = function(inp) {
     var sdr = '';
     var overlaps = this.getOverlaps(inp);
-    var bestThresh = this.getBestThreshold(overlaps);
+    var bestThresh = this.getOvlpThreshold(overlaps);
     for (var ai = 0; ai < overlaps.length; ai++) {
         if (overlaps[ai] >= bestThresh) sdr += '1';
         else sdr += '0';
     }
     return sdr;
 };
+Layer.prototype.senseInput = function(inp) {
+    //activate the correct columns and collect data about it
+    var overlaps = this.getOverlaps(inp);
+    var bestThresh = this.getOvlpThreshold(overlaps);
+    var maxActv = 0;
+    for (var ai = 0; ai < overlaps.length; ai++) {
+        var col = this.columns[ai];
+        if (overlaps[ai] > 0 && overlaps[ai] >= bestThresh) {
+            col.state = 1; //active
+
+            //adjust the permanences because it's active
+            for (var bi = 0; bi < col.bitIndices.length; bi++) {
+                if (col.permanences[ai] >= permThreshold) { //connected
+                    if (inp.charAt(col.bitIndices[ai]) === '1') { //and one?
+                        col.permanences[ai] += 0.05; //strengthen the conn.
+                        if (col.permanences[ai] > 1) col.permanences[ai] = 1;
+                    } else { //connected and zero?
+                        col.permanences[ai] -= 0.05; //weaken the conn.
+                        if (col.permanences[ai] < 0) col.permanences[ai] = 0;
+                    }
+                }
+            }
+        } else {
+            col.state = 0; //inactive
+        }
+    
+        var actv = col.state === 1 ? 1 : 0;
+        col.actvHistory.push(actv);
+        col.actvTotal += actv;
+        col.actvTotal -= col.actvHistory[0];
+        if (col.actvHistory.length > slidingWidth) col.actvHistory.shift();
+        if (col.actvTotal > maxActv) {
+            maxActv = col.actvTotals;
+        }
+
+        var ovlp = overlaps[ai] > 0 ? 1 : 0;
+        col.ovlpHistory.push(ovlp);
+        col.ovlpTotal += ovlp;
+        col.ovlpTotal -= col.ovlpHistory[0];
+        if (col.ovlpHistory.length > slidingWidth) col.ovlpHistory.shift();
+    }
+
+    //boost columns based on activity
+    var minActv = 0.01*maxActv;
+    var maxBoost = 2;
+    var boostSlope = (1 - maxBoost)/minActv;
+    for (var ai = 0; ai < this.columns.length; ai++) {
+        var col = this.columns[ai];
+        if (col.actvTotal > minActv) col.boost = 1;
+        else col.boost = boostSlope*col.actvTotal + maxBoost;
+    }
+
+    //boost connections based on overlap
+    if (col.ovlpTotal < minActv) col.dopePermanences(0.1*permThreshold);
+};
 
 function Column(pos, s) { //s is the length of the transformed inputs in bits
     this.bitIndices = [];
-    this.permanances = [];
+    this.permanences = [];
+    this.state = 0; //0 inactive, 1 active, 2 predictive
+    this.actvHistory = [];
+    this.actvTotal = 0;
+    this.ovlpHistory = [];
+    this.ovlpTotal = 0;
+    this.boost = 1;
 
-    //treat the column list and the input bit list as one dimensional entities
-    var posFraction = pos/numCols;
-    var center = Math.floor(s*posFraction);
-    //columns then connect to similarly positioned bits
-    for (var ai = center-potRadius; ai <= center+potRadius; ai++) {
-        var idx = ai < 0 ? (ai-ai*s)%s : (ai >= s ? ai%s : ai); //loops around
-        this.bitIndices.push(idx); //add it to the potential connections list
-        
-        //initialize the permanance value for this connection
-        if (Math.random() < potPct) {
-            this.permanances.push(grf(permThreshold, 1));
-        } else {
-            this.permanances.push(grf(0, permThreshold));
-        }
+    //columns then connect to random bits
+    this.bitIndices = getRandPerm(s, numPotSyn);
+    for (var ai = 0; ai < numPotSyn; ai++) {
+        //initialize the permanence value for this connection
+        this.permanences.push(grf(permThreshold-0.1, permThreshold+0.1));
     }
 }
 Column.prototype.getOverlap = function(inp) {
     var matching = 0;
     for (var ai = 0; ai < this.bitIndices.length; ai++) {
-        if (this.permanances[ai] >= permThreshold) {
+        if (this.permanences[ai] >= permThreshold) {
             if (inp.charAt(this.bitIndices[ai]) === '1') matching++; 
         }
     }
-    return matching;
+
+    if (matching < minOverlap) return 0;
+    else return matching*this.boost;
+};
+Column.prototype.dopePermanences = function(amt) {
+    for (var ai = 0; ai < this.permanences.length; ai++) {
+        this.permanences[ai] += amt;
+        this.permanences[ai] = Math.max(this.permanences[ai], 1);
+    }
 };
 
 /********************
@@ -161,6 +220,17 @@ Column.prototype.getOverlap = function(inp) {
 function $s(id) { //for convenience
     if (id.charAt(0) !== '#') return false;
     return document.getElementById(id.substring(1));
+}
+function getRandPerm(n, m) { //random permutation of integers in [0, n)
+    //take the m first elements
+    var ret = [];
+    for (var ai = 0; ai < n; ai++) {
+        var j = getRandInt(0, ai+1);
+        ret[ai] = ret[j];
+        ret[j] = ai;
+    }
+    if (arguments.length === 1) return ret;
+    else return ret.slice(n-m);
 }
 function getRandInt(low, high) { //output is in [low, high)
     return Math.floor(grf(low, high));
