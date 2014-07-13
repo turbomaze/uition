@@ -13,7 +13,7 @@
 var encoderParams = {
     scalar: {
         n: 121,
-        w: 21,
+        w: 41,
         min: -1,
         max: 1
     }
@@ -22,9 +22,11 @@ var encoderParams = {
 var sparsity = 0.02;
 var numCols = 2048;
 var cellsPerCol = 1;
-var numPotSyn = 21;
+var numPotSyn = 60;
 var permThreshold = 0.3;
-var minOverlap = 2;
+var incPerm = 0.1;
+var decPerm = 0.06;
+var minOverlap = 10;
 var slidingWidth = 1000;
 
 /*************
@@ -32,6 +34,7 @@ var slidingWidth = 1000;
 
 /*********************
  * working variables */
+var data;
 var inpSize;
 var brain;
 
@@ -41,7 +44,7 @@ function initHTM() {
     var start = +new Date();
 
     //the data that will be streamed to the HCM
-    var data = {
+    data = {
         type: 'scalar',
         points: [],
         encodedPoints: []
@@ -63,7 +66,7 @@ function initHTM() {
     //get the SDRs of the inputs by applying an overlap threshold
     //to each of the columns
     for (var ai = 0; ai < data.points.length; ai++) {
-        var sdr = brain.getSDR(data.encodedPoints[ai]);
+        var sdr = brain.sense(data.encodedPoints[ai]);
         if (ai === 0) console.log('Input 0: '+sdr);
     }
 
@@ -124,24 +127,26 @@ Layer.prototype.getSDR = function(inp) {
     }
     return sdr;
 };
-Layer.prototype.senseInput = function(inp) {
+Layer.prototype.sense = function(inp) {
+    var sdr = '';
+
     //activate the correct columns and collect data about it
     var overlaps = this.getOverlaps(inp);
-    var bestThresh = this.getOvlpThreshold(overlaps);
+    var thresh = this.getOvlpThreshold(overlaps);
     var maxActv = 0;
     for (var ai = 0; ai < overlaps.length; ai++) {
         var col = this.columns[ai];
-        if (overlaps[ai] > 0 && overlaps[ai] >= bestThresh) {
+        if (overlaps[ai] > 0 && overlaps[ai] >= thresh) {
             col.state = 1; //active
 
             //adjust the permanences because it's active
             for (var bi = 0; bi < col.bitIndices.length; bi++) {
                 if (col.permanences[ai] >= permThreshold) { //connected
                     if (inp.charAt(col.bitIndices[ai]) === '1') { //and one?
-                        col.permanences[ai] += 0.05; //strengthen the conn.
+                        col.permanences[ai] += incPerm; //strengthen the conn.
                         if (col.permanences[ai] > 1) col.permanences[ai] = 1;
                     } else { //connected and zero?
-                        col.permanences[ai] -= 0.05; //weaken the conn.
+                        col.permanences[ai] -= decPerm; //weaken the conn.
                         if (col.permanences[ai] < 0) col.permanences[ai] = 0;
                     }
                 }
@@ -150,20 +155,28 @@ Layer.prototype.senseInput = function(inp) {
             col.state = 0; //inactive
         }
     
+        //take care of the activity history
         var actv = col.state === 1 ? 1 : 0;
         col.actvHistory.push(actv);
         col.actvTotal += actv;
-        col.actvTotal -= col.actvHistory[0];
-        if (col.actvHistory.length > slidingWidth) col.actvHistory.shift();
+        if (col.actvHistory.length > slidingWidth) {
+            col.actvTotal -= col.actvHistory[0];
+            col.actvHistory.shift();
+        }
         if (col.actvTotal > maxActv) {
-            maxActv = col.actvTotals;
+            maxActv = col.actvTotal;
         }
 
+        //take care of the overlap history
         var ovlp = overlaps[ai] > 0 ? 1 : 0;
         col.ovlpHistory.push(ovlp);
         col.ovlpTotal += ovlp;
-        col.ovlpTotal -= col.ovlpHistory[0];
-        if (col.ovlpHistory.length > slidingWidth) col.ovlpHistory.shift();
+        if (col.ovlpHistory.length > slidingWidth) {
+            col.ovlpTotal -= col.ovlpHistory[0];
+            col.ovlpHistory.shift();
+        }
+
+        sdr += actv;
     }
 
     //boost columns based on activity
@@ -172,12 +185,14 @@ Layer.prototype.senseInput = function(inp) {
     var boostSlope = (1 - maxBoost)/minActv;
     for (var ai = 0; ai < this.columns.length; ai++) {
         var col = this.columns[ai];
-        if (col.actvTotal > minActv) col.boost = 1;
+        if (col.actvTotal >= minActv) col.boost = 1;
         else col.boost = boostSlope*col.actvTotal + maxBoost;
     }
 
     //boost connections based on overlap
     if (col.ovlpTotal < minActv) col.dopePermanences(0.1*permThreshold);
+
+    return sdr;
 };
 
 function Column(pos, s) { //s is the length of the transformed inputs in bits
