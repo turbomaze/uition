@@ -19,6 +19,7 @@ var encoderParams = {
     }
 };
 
+//CLA config
 var sparsity = 0.02;
 var numCols = 2304; //48*48
 var cellsPerCol = 4;
@@ -34,10 +35,17 @@ var newSynapseCount = 16;
 var maxNumSynapses = 80;
 var slidingWidth = 1000;
 
-var sdrRad = 5;
-var sdrBrdr = 1;
-var dim = Math.sqrt(numCols);
-var dims = [dim*2*sdrRad+(dim-1)*sdrBrdr, dim*2*sdrRad+(dim-1)*sdrBrdr];
+//rendering config
+var drawEvery = 2;
+var tpoRad = 3; //radius of a cell in the rendering
+var tpoBrdr1 = 2; //column level border
+var tpoBrdr2 = 1; //cell level border
+var w1 = Math.ceil(Math.sqrt(numCols));
+var w2 = Math.ceil(Math.sqrt(cellsPerCol));
+var dims = [
+    w1*w2*2*tpoRad+(w1-1)*tpoBrdr1+(w2-1)*w1*tpoBrdr2,
+    w1*w2*2*tpoRad+(w1-1)*tpoBrdr1+(w2-1)*w1*tpoBrdr2
+];
 
 /*************
  * constants */
@@ -87,7 +95,7 @@ function initHTM() {
     var asyncLoopDataPts = function(callback) {
         //inner loop work
         var out = brain.sense(data.encodedPoints[ai]);
-        renderSDR(out[0]);       
+        if (ai%drawEvery === 0) render(out[1]);
         $s('#time').innerHTML = ai;
 
         //increment and call the next iteration
@@ -130,23 +138,32 @@ function encode(type, value) {
     }
 }
 
-function renderSDR(sdr) {
+function render(tpo) {
     //dampen old activations
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 1)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     //draw new ones
-    var sdrIncrFactor = (2*sdrRad+sdrBrdr);
-    for (var ai = 0; ai < sdr.length; ai++) {
-        var y = Math.floor(ai/dim);
-            y = sdrIncrFactor*y + sdrRad;
-        var x = ai%dim;
-            x = sdrIncrFactor*x + sdrRad;
-        if (sdr[ai]) drawPoint(x, y, sdrRad, '#B1E66C');
+    var tpoIncrFactor = 2*w2*tpoRad+tpoBrdr1+tpoBrdr2*(w2-1);
+    for (var ai = 0; ai < tpo.length; ai++) { //for each column
+        var y = Math.floor(ai/w1);
+            y = tpoIncrFactor*y + tpoRad;
+        var x = ai%w1;
+            x = tpoIncrFactor*x + tpoRad;
+        for (var bi = 0; bi < tpo[ai].length; bi++) { //for each cell
+            var yo = (2*tpoRad+tpoBrdr2)*Math.floor(bi/w2);
+            var xo = (2*tpoRad+tpoBrdr2)*(bi%w2);
+
+            var color = false;
+            if (tpo[ai][bi][0] === 1) color = '#B1E66C'; //active
+            else if (tpo[ai][bi][1] === 1) color = '#EBF08D'; //predicted
+
+            if (color) drawPoint(x+xo, y+yo, tpoRad, color);
+        }
     }
 }
 
-var fuck = [0, 0, 0, 0];
+var dbg = [0, 0, 0, 0];
 
 /***********
  * objects */
@@ -175,7 +192,7 @@ function TemporalPooler() {
         }
     }
 }
-TemporalPooler.prototype.getBestMatchingCellId = function(col) {
+TemporalPooler.prototype.getBestMatchingCellIdx = function(col) {
     var best = [-1, -1];
     for (var ai = 0; ai < col.length; ai++) {
         var neuron = col[ai];
@@ -203,24 +220,25 @@ TemporalPooler.prototype.getBestMatchingCellId = function(col) {
     }
 };
 TemporalPooler.prototype.getBestMatchingCell = function(col) {
-    var best = this.getBestMatchingCellId(col);
+    var best = this.getBestMatchingCellIdx(col);
     return col[best];
 };
 TemporalPooler.prototype.applyChanges = function(addr, positive) {
     var changes =  this.segmentChangeQueue[addr[0]][addr[1]];
     var neuron = this.columns[addr[0]][addr[1]];
     for (var ai = 0; ai < changes.length; ai++) {
-        switch (changes[0]) {
+        var change = changes[ai];
+        switch (change[0]) {
             case 'new':
                 neuron.addSegment(
                     this.columns, this.learningCells //always the current ones
                 );
                 break;
             case 'reinforce': //and possibly grow
-                var dsIdx = changes[1][0];
+                var dsIdx = change[1][0];
                 var ds = neuron.dendriteSegments[dsIdx];
-                var future = changes[1][1];
-                var growSegment = changes[1][2];
+                var future = change[1][1];
+                var growSegment = change[1][2];
 
                 for (var bi = 0; bi < ds.synapses.length; bi++) {
                     var syn = ds.synapses[bi];
@@ -228,8 +246,10 @@ TemporalPooler.prototype.applyChanges = function(addr, positive) {
                     var rState = future ? cell.futureState : cell.state;
                     if (rState === 1 && positive) {
                         ds.permanences[bi] += incPerm;
+                        ds.permanences[bi] = Math.min(ds.permanences[bi], 1);
                     } else {
                         ds.permanences[bi] -= decPerm;
+                        ds.permanences[bi] = Math.max(0, ds.permanences[bi]);
                     }
                 }
 
@@ -270,7 +290,8 @@ TemporalPooler.prototype.process = function(spo) {
                 var neuron = col[bi];
 
                 //activate predicted cells in that column
-                if (neuron.state === 2) {
+                if (neuron.pred === 1) {
+dbg[3]++; //prediction was right!
                     var ds = neuron.getActiveSegment(0);
                     predictedOne = true;
                     neuron.futureState = 1;
@@ -291,11 +312,11 @@ TemporalPooler.prototype.process = function(spo) {
             }
 
             if (!willLearnOne) {
-                var learningCellId = this.getBestMatchingCellId(col);
-                var learningCell = col[learningCellId];
+                var learningCellIdx = this.getBestMatchingCellIdx(col);
+                var learningCell = col[learningCellIdx];
                 learningCell.futureLearn = 1;
-                this.futureLearningCells.push([ai, learningCellId]);
-                this.segmentChangeQueue[ai][learningCellId].push(['new']);
+                this.futureLearningCells.push([ai, learningCellIdx]);
+                this.segmentChangeQueue[ai][learningCellIdx].push(['new']);
             }
         }
     }
@@ -309,17 +330,21 @@ TemporalPooler.prototype.process = function(spo) {
                 var ds = neuron.dendriteSegments[ti];
                 ds.updateActivity(this.columns, true); //future activity
                 if (ds.isActive(0, true)) { //future active
-                    neuron.futurePred = 2;
+                    neuron.futurePred = 1;
+dbg[2]++; //made a prediction
                     this.segmentChangeQueue[ai][bi].push(
                         ['reinforce', [ti, true, false]] //future don't grow
                     );
-                    var mehSegId = neuron.getBestMatchingSegmentIdx();
-                    var mehSeg = neuron.dendriteSegments[mehSegId];
-                    var growSeg = mehSeg.synapses.length < maxNumSynapses;
-                    this.segmentChangeQueue[ai][bi].push([
-                        'reinforce',
-                        [mehSegId, false, growSeg]
-                    ]); //present grow
+
+                    var mehSegIdx = neuron.getBestMatchingSegmentIdx();
+                    if (mehSegIdx !== -1) {
+                        var mehSeg = neuron.dendriteSegments[mehSegIdx];
+                        var growSeg = mehSeg.synapses.length < maxNumSynapses;
+                        this.segmentChangeQueue[ai][bi].push([
+                            'reinforce',
+                            [mehSegIdx, false, growSeg]
+                        ]); //present grow
+                    }
                 }
             }
         }
@@ -374,7 +399,7 @@ Neuron.prototype.getActiveSegment = function (ls) { //learn or active?
     }
     return this.dendriteSegments[best[1]];
 };
-Neuron.prototype.getBestMatchingSegmentId = function() {
+Neuron.prototype.getBestMatchingSegmentIdx = function() {
     var best = [-1, -1];
     for (var ai = 0; ai < this.dendriteSegments.length; ai++) {
         if (this.dendriteSegments[ai].lenientActv > best[0]) {
@@ -387,12 +412,11 @@ Neuron.prototype.getBestMatchingSegmentId = function() {
     } else return -1;
 };
 Neuron.prototype.getBestMatchingSegment = function() {
-    var best = this.getBestMatchingSegmentId();
+    var best = this.getBestMatchingSegmentIdx();
     if (best !== -1) return this.dendriteSegments[best];
     else return null;
 };
 Neuron.prototype.addSegment = function(context, relLearnCells) {
-fuck[2]++;
     this.dendriteSegments.push(
         new DendriteSegment(context, relLearnCells)
     );
@@ -407,7 +431,7 @@ Neuron.prototype.timeTravel = function() {
 };
 
 function DendriteSegment(context, relLearnCells) {
-fuck[0]++;
+dbg[0]++; //created a segment
     //the ctx within which this cell exists; 2d arr of cols/cells
     this.synapses = []; //list of pairs of numbers, [column, cell]
     this.synapsesO = {}; //pairs of numbers, [column, cell], as keys
@@ -424,7 +448,7 @@ fuck[0]++;
         this.synapsesO[relLearnCells[indices[ai]]] = true;
         this.permanences.push(initialPerm);
     }
-fuck[1]+=newSynapseCount;
+dbg[1]+=newSynapseCount; //added some synapses
 }
 DendriteSegment.prototype.updateActivity = function(context, future) {
     //the ctx within which this cell exists; 2d arr of cols/cells
@@ -433,17 +457,17 @@ DendriteSegment.prototype.updateActivity = function(context, future) {
     var numLenientConns = 0;
     for (var ai = 0; ai < this.synapses.length; ai++) {
         var syn = this.synapses[ai];
+        var cell = context[syn[0]][syn[1]];
         if (this.permanences[ai] >= permThreshold) {
-            var neuron = context[syn[0]][[1]];
             if (future) {
-                if (neuron.futureState === 1) numActvConns0++;
-                if (neuron.futureLearn === 1) numActvConns1++;
+                if (cell.futureState === 1) numActvConns0++;
+                if (cell.futureLearn === 1) numActvConns1++;
             } else {
-                if (neuron.state === 1) numActvConns0++;
-                if (neuron.learn === 1) numActvConns1++;
+                if (cell.state === 1) numActvConns0++;
+                if (cell.learn === 1) numActvConns1++;
             }
         }
-        if (neuron.state === 1) numLenientConns++;
+        if (cell.state === 1) numLenientConns++;
     }
     if (future) {
         this.futureActivity = [numActvConns0, numActvConns1];
@@ -473,7 +497,7 @@ DendriteSegment.prototype.grow = function(context, future, relLearnCells) {
         }
         ai++;
     }
-fuck[1]+=(newSynapseCount - numActive)-numToAdd;
+dbg[1]+=(newSynapseCount - numActive)-numToAdd; //added some synapses
 };
 
 function SpatialPooler(s) { //s = len of transformed inputs in bits
