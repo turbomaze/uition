@@ -29,10 +29,11 @@ var incPerm = 0.1;
 var decPerm = 0.06;
 var initialPerm = permThreshold+decPerm; //for dendrite segments
 var minOverlap = 11;
-var minDsActvThreshold = 5; //don't consider anything below this
-var dsActvThreshold = 12; //min # active conns for a dendrite seg. to be active
+var minDsActvThreshold = 6; //don't consider anything below this
+var dsActvThreshold = 13; //min # active conns for dendrite seg. to be active
 var newSynapseCount = 16;
-var maxNumSynapses = 80;
+var maxNumSynapses = 60;
+var maxNumSegments = 5;
 var slidingWidth = 1000;
 
 //rendering config
@@ -58,6 +59,7 @@ var ctx;
 var data;
 var inpSize;
 var brain;
+var t; //time
 
 /******************
  * work functions */
@@ -76,7 +78,7 @@ function initHTM() {
         points: [],
         encodedPoints: []
     };
-    for (var ai = 0; ai < 1000; ai++) { //sine wave
+    for (var ai = 0; ai < 10000; ai++) { //sine wave
         data.points.push(Math.sin(ai*Math.PI/(30+Math.E)));
     }
 
@@ -91,15 +93,15 @@ function initHTM() {
     brain = new NeocortexLayer(inpSize);
 
     //get the SDRs of the inputs and render them to the canvas
-    var ai = 0;
+    t = 0;
     var asyncLoopDataPts = function(callback) {
         //inner loop work
-        var out = brain.sense(data.encodedPoints[ai]);
-        if (ai%drawEvery === 0) render(out[1]);
-        $s('#time').innerHTML = ai;
+        var out = brain.sense(data.encodedPoints[t]);
+        if (t%drawEvery === 0) render(out[1]);
+        $s('#time').innerHTML = t;
 
         //increment and call the next iteration
-        ai += 1;
+        t += 1;
         setTimeout(function() { callback(true); }, 6); 
     };
     asyncLoop(data.points.length,
@@ -163,7 +165,7 @@ function render(tpo) {
     }
 }
 
-var dbg = [0, 0, 0, 0];
+var dbg = [0, 0, 0, 0, 0, 0];
 
 /***********
  * objects */
@@ -267,18 +269,6 @@ TemporalPooler.prototype.applyChanges = function(addr, positive) {
     this.segmentChangeQueue[addr[0]][addr[1]] = []; //delete the change list
 };
 TemporalPooler.prototype.process = function(spo) {
-    //compute the current activities for all the dendrite segments
-    for (var ai = 0; ai < this.columns.length; ai++) {
-        var col = this.columns[ai];
-        for (var bi = 0; bi < col.length; bi++) {
-            var neuron = col[bi];
-            for (var ti = 0; ti < neuron.dendriteSegments.length; ti++) {
-                var ds = neuron.dendriteSegments[ti];
-                ds.updateActivity(this.columns, false);
-            }
-        }
-    }
-
     //figure out which cells in the active columns are active
     for (var ai = 0; ai < spo.length; ai++) {
         if (spo[ai]) { //for each active column
@@ -304,19 +294,23 @@ dbg[3]++; //prediction was right!
             }
 
             if (!predictedOne) {
+dbg[4]++; //a column bursted!
                 //burst (activate all) if none were predicted
                 for (var bi = 0; bi < cellsPerCol; bi++) {
                     var neuron = col[bi];
                     neuron.futureState = 1;
                 }
             }
+else dbg[5]++; //column didn't burst
 
             if (!willLearnOne) {
-                var learningCellIdx = this.getBestMatchingCellIdx(col);
-                var learningCell = col[learningCellIdx];
-                learningCell.futureLearn = 1;
-                this.futureLearningCells.push([ai, learningCellIdx]);
-                this.segmentChangeQueue[ai][learningCellIdx].push(['new']);
+                var lrnCellIdx = this.getBestMatchingCellIdx(col);
+                var lrnCell = col[lrnCellIdx];
+                lrnCell.futureLearn = 1;
+                this.futureLearningCells.push([ai, lrnCellIdx]);
+                if (lrnCell.dendriteSegments.length < maxNumSegments) {
+                    this.segmentChangeQueue[ai][lrnCellIdx].push(['new']);
+                }
             }
         }
     }
@@ -328,7 +322,7 @@ dbg[3]++; //prediction was right!
             var neuron = col[bi];
             for (var ti = 0; ti < neuron.dendriteSegments.length; ti++) {
                 var ds = neuron.dendriteSegments[ti];
-                ds.updateActivity(this.columns, true); //future activity
+                ds.updateActivity(this.columns); //future activity
                 if (ds.isActive(0, true)) { //future active
                     neuron.futurePred = 1;
 dbg[2]++; //made a prediction
@@ -428,6 +422,13 @@ Neuron.prototype.timeTravel = function() {
     this.futureLearn = 0;
     this.pred = this.futurePred;
     this.futurePred = 0;
+    for (var ti = 0; ti < this.dendriteSegments.length; ti++) {
+        var ds = this.dendriteSegments[ti];
+        ds.activity = ds.futureActivity;
+        ds.futureActivity = [0, 0];
+        ds.lenientActv = ds.futureLenientActv;
+        ds.futureLenientActv = 0;
+    }
 };
 
 function DendriteSegment(context, relLearnCells) {
@@ -440,6 +441,7 @@ dbg[0]++; //created a segment
     this.activity = [0, 0]; //first is for active, second is for learn
     this.futureActivity = [0, 0];
     this.lenientActv = 0; //weaker definition of "active"
+    this.futureLenientActv = 0;
 
     //adds new synapses
     var indices = getRandPerm(relLearnCells.length, newSynapseCount);
@@ -450,7 +452,7 @@ dbg[0]++; //created a segment
     }
 dbg[1]+=newSynapseCount; //added some synapses
 }
-DendriteSegment.prototype.updateActivity = function(context, future) {
+DendriteSegment.prototype.updateActivity = function(context) {
     //the ctx within which this cell exists; 2d arr of cols/cells
     var numActvConns0 = 0;
     var numActvConns1 = 0;
@@ -459,22 +461,13 @@ DendriteSegment.prototype.updateActivity = function(context, future) {
         var syn = this.synapses[ai];
         var cell = context[syn[0]][syn[1]];
         if (this.permanences[ai] >= permThreshold) {
-            if (future) {
-                if (cell.futureState === 1) numActvConns0++;
-                if (cell.futureLearn === 1) numActvConns1++;
-            } else {
-                if (cell.state === 1) numActvConns0++;
-                if (cell.learn === 1) numActvConns1++;
-            }
+            if (cell.futureState === 1) numActvConns0++;
+            if (cell.futureLearn === 1) numActvConns1++;
         }
-        if (cell.state === 1) numLenientConns++;
+        if (cell.futureState === 1) numLenientConns++;
     }
-    if (future) {
-        this.futureActivity = [numActvConns0, numActvConns1];
-    } else {
-        this.activity = [numActvConns0, numActvConns1];
-        this.lenientActv = numLenientConns;
-    }
+    this.futureActivity = [numActvConns0, numActvConns1];
+    this.futureLenientActv = numLenientConns;
 };
 DendriteSegment.prototype.isActive = function(ls, future) {
     if (future) return this.futureActivity[ls] >= dsActvThreshold;
