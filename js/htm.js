@@ -5,7 +5,7 @@
 | @author Anthony  |
 | @version 0.1     |
 | @date 2014/07/12 |
-| @edit 2014/07/12 |
+| @edit 2014/07/14 |
 \******************/
 
 /**********
@@ -13,7 +13,7 @@
 var encoderParams = {
     scalar: {
         n: 121,
-        w: 41,
+        w: 61,
         min: -1,
         max: 1
     }
@@ -21,23 +21,24 @@ var encoderParams = {
 
 //CLA config
 var sparsity = 0.02;
-var numCols = 2304; //48*48
+var numCols = 2048; //48*48
 var cellsPerCol = 4;
 var numPotSyn = 67;
 var permThreshold = 0.2;
-var incPerm = 0.1;
-var decPerm = 0.06;
+var incPerm = 0.04;
+var decPerm = 0.018;
 var initialPerm = permThreshold+decPerm; //for dendrite segments
-var minOverlap = 11;
-var minDsActvThreshold = 6; //don't consider anything below this
-var dsActvThreshold = 13; //min # active conns for dendrite seg. to be active
+var minOverlap = 16;
+var minDsActvThreshold = 5; //don't consider anything below this
+var dsActvThreshold = 14; //min # active conns for dendrite seg. to be active
 var newSynapseCount = 16;
 var maxNumSynapses = 60;
 var maxNumSegments = 5;
+var segChangeMaxAge = 1;
 var slidingWidth = 1000;
 
 //rendering config
-var drawEvery = 2;
+var drawEvery = 1;
 var tpoRad = 3; //radius of a cell in the rendering
 var tpoBrdr1 = 2; //column level border
 var tpoBrdr2 = 1; //cell level border
@@ -109,14 +110,14 @@ function initHTM() {
             asyncLoopDataPts(function(keepGoing) {
                 if (keepGoing) loop.next();
                 else loop.break();
-            })
+            });
         }, 
         function() { /* inner loop finished */ }
     );
 
     var duration = +new Date() - start;
     console.log(
-        'Completed in '+duration+'ms. (not accurate to to asynchronicity)'
+        'Completed in '+duration+'ms. (not accurate due to asynchronicity)'
     );
 }
 
@@ -230,6 +231,10 @@ TemporalPooler.prototype.applyChanges = function(addr, positive) {
     var neuron = this.columns[addr[0]][addr[1]];
     for (var ai = 0; ai < changes.length; ai++) {
         var change = changes[ai];
+        if (change[1]-t > segChangeMaxAge) { //expired so penalize it
+            //change[0] = 'penalize';
+            continue;
+        }
         switch (change[0]) {
             case 'new':
                 neuron.addSegment(
@@ -237,10 +242,9 @@ TemporalPooler.prototype.applyChanges = function(addr, positive) {
                 );
                 break;
             case 'reinforce': //and possibly grow
-                var dsIdx = change[1][0];
+                var dsIdx = change[2][0];
                 var ds = neuron.dendriteSegments[dsIdx];
-                var future = change[1][1];
-                var growSegment = change[1][2];
+                var future = change[2][1];
 
                 for (var bi = 0; bi < ds.synapses.length; bi++) {
                     var syn = ds.synapses[bi];
@@ -254,13 +258,25 @@ TemporalPooler.prototype.applyChanges = function(addr, positive) {
                         ds.permanences[bi] = Math.max(0, ds.permanences[bi]);
                     }
                 }
-
-                if (growSegment) {
-                    ds.grow(
-                        this.columns,
-                        future,
-                        future ? this.futureLearningCells : this.learningCells
-                    );
+                break;
+            case 'grow':
+                var dsIdx = change[2][0];
+                var ds = neuron.dendriteSegments[dsIdx];
+                var future = change[2][1];
+                ds.grow(
+                    this.columns,
+                    future,
+                    future ? this.futureLearningCells : this.learningCells
+                );
+                break;
+            case 'penalize':
+                var dsIdx = change[2][0];
+                var ds = neuron.dendriteSegments[dsIdx];
+                for (var bi = 0; bi < ds.synapses.length; bi++) {
+                    var syn = ds.synapses[bi];
+                    var cell = this.columns[syn[0]][syn[1]]; //the dest. cell
+                    ds.permanences[bi] -= decPerm;
+                    ds.permanences[bi] = Math.max(0, ds.permanences[bi]);
                 }
                 break;
         }
@@ -309,7 +325,7 @@ else dbg[5]++; //column didn't burst
                 lrnCell.futureLearn = 1;
                 this.futureLearningCells.push([ai, lrnCellIdx]);
                 if (lrnCell.dendriteSegments.length < maxNumSegments) {
-                    this.segmentChangeQueue[ai][lrnCellIdx].push(['new']);
+                    this.segmentChangeQueue[ai][lrnCellIdx].push(['new', t]);
                 }
             }
         }
@@ -327,7 +343,7 @@ else dbg[5]++; //column didn't burst
                     neuron.futurePred = 1;
 dbg[2]++; //made a prediction
                     this.segmentChangeQueue[ai][bi].push(
-                        ['reinforce', [ti, true, false]] //future don't grow
+                        ['reinforce', t, [ti, true]] //future
                     );
 
                     var mehSegIdx = neuron.getBestMatchingSegmentIdx();
@@ -335,9 +351,15 @@ dbg[2]++; //made a prediction
                         var mehSeg = neuron.dendriteSegments[mehSegIdx];
                         var growSeg = mehSeg.synapses.length < maxNumSynapses;
                         this.segmentChangeQueue[ai][bi].push([
-                            'reinforce',
-                            [mehSegIdx, false, growSeg]
-                        ]); //present grow
+                            'reinforce', t,
+                            [mehSegIdx, false]
+                        ]); //present
+                        if (growSeg) {
+                            this.segmentChangeQueue[ai][bi].push([
+                                'grow', t,
+                                [mehSegIdx, false]
+                            ]);
+                        }
                     }
                 }
             }
@@ -349,11 +371,12 @@ dbg[2]++; //made a prediction
         var col = this.columns[ai];
         for (var bi = 0; bi < col.length; bi++) {
             var neuron = col[bi];
-            if (neuron.futureLearn === 1) {
+            //if (neuron.futureLearn === 1) {
+            if (neuron.futureState === 1) {
                 this.applyChanges([ai, bi], true); //positive reinforcement
-            } else if (neuron.pred === 1 && neuron.futurePred === 0) {
+            }/* else if (neuron.pred === 1 && neuron.futurePred === 0) {
                 this.applyChanges([ai, bi], false); //negative reinforcement
-            }
+            }*/
         }
     }
 
@@ -474,8 +497,11 @@ DendriteSegment.prototype.isActive = function(ls, future) {
     else return this.activity[ls] >= dsActvThreshold;
 };
 DendriteSegment.prototype.grow = function(context, future, relLearnCells) {
+    if (this.synapses.length > maxNumSynapses) return;
+
     var numActive = future ? this.activity[0] : this.futureActivity[0];
     var numToAdd = newSynapseCount - numActive;
+    numToAdd = Math.min(numToAdd, maxNumSynapses-this.synapses.length);
 
     //adds numToAdd new synapses or as many as it can
     var indices = getRandPerm(relLearnCells.length), ai = 0;
@@ -509,10 +535,28 @@ SpatialPooler.prototype.getOverlaps = function(inp) {
     return overlaps;
 };
 SpatialPooler.prototype.getOvlpThreshold = function(overlaps) {
+    var goalNum = Math.round(sparsity*numCols); //how many to allow through
     var bkp = overlaps.slice();
     bkp.sort(function(a, b) { return b - a; });
-    var k = Math.round(0.75*sparsity*numCols); //good estimate of the best
-    return bkp[k];
+
+    var k = bkp[goalNum]; //good estimate of the best
+    var lowestError = bkp.filter(function(a){return a >= k;}).length-goalNum;
+
+    for (var ai = k; ai <= bkp[0]; ai++) {
+        var error = bkp.filter(function(a){return a >= ai;}).length-goalNum;
+        if (error <= lowestError && error >= 0) {
+            lowestError = error;
+            k = ai;
+        } else { //error is less than zero
+            if (Math.abs(error) < Math.abs(lowestError)) {
+                return ai;
+            } else {
+                return k;
+            }
+        }
+    }
+
+    return k;
 };
 SpatialPooler.prototype.getSDR = function(inp) {
     var sdr = '';
