@@ -5,23 +5,25 @@
 | @author Anthony  |
 | @version 0.1     |
 | @date 2014/07/12 |
-| @edit 2014/11/14 |
+| @edit 2014/11/15 |
 \******************/
 
 /**********
  * config */
 //HTM config
-var numCols = 3; //how many columns total
+var numCols = 4; //how many columns total
 var cellsPerCol = 9; //number of cells in each column
-var initPerm = 0.4; //initial permanance
+
+//temporal learning
+var initPerm = 0.3; //initial permanance
 var permInc = 0.05; //how much permanances are incremented
-var permDec = 0.03; //"" decremented
+var permDec = 0.01; //"" decremented
 var minSynThresh = 1; //min num active synapses for learning selection
 var activityRatio = 0.75; //75% of synapses active -> active dendrite
 var permThresh = 0.2;
 
 //rendering config
-var delay = 50; //in ms
+var delay = 5; //in ms
 var tpoRad = 12; //radius of a cell in the rendering
 var tpoBrdr1 = 30; //column level border
 var tpoBrdr2 = 3; //cell level border
@@ -78,59 +80,25 @@ function initHTM() {
                 wasLearning: false,
                 wasPredicted: false,
                 distalDendrites: [],
-                synChanges: []
+                synChanges: [],
+                applySynChanges: function(cell) {
+                    //apply all the changes to its synapses
+                    for (var sci = 0; sci < cell.synChanges.length; sci++) {
+                        var seg = cell.synChanges[sci][0];
+                        var syn = cell.synChanges[sci][1];
+                        var permChange = cell.synChanges[sci][2];
+                        cell.distalDendrites[seg][syn][2] += permChange;
+                    }
+                    cell.synChanges = []; //changes applied so empty queue
+                }
             });
         }
     }
 
     //learn the pattern
     var di = 0; //data increment
+    var start = +new Date();
     var asyncLoopData = function(callback) {
-        var start = +new Date();
-
-        //make predictions and train distal dendrite segments
-        var synChanges = [];
-        for (var ki = 0; ki < brain.cols.length; ki++) {
-            for (var ci = 0; ci < brain.cols[ki].cells.length; ci++) {
-                var cell = brain.cols[ki].cells[ci];
-                var dendrites = cell.distalDendrites;
-
-                //check all the distal dendrite segments
-                for (var seg = 0; seg < dendrites.length; seg++) {
-                    var segment = dendrites[seg];
-                    var activity = getSynActivity([ki, ci], seg, permThresh);
-
-                    //if the number of active synapses on this segment
-                    //exceeds the activity ratio, then the segment is
-                    //active -> predict the column
-                    if (activity[0]/activity[1] >= activityRatio) {
-                        cell.predicted = true;
-
-                        //train all the synapses
-                        for (var syn = 0; syn < segment.length; syn++) {
-                            var endLoc = segment[syn];
-                            var connCol = brain.cols[endLoc[0]];
-                            var connCell = connCol.cells[endLoc[1]];
-                            //these changes will only occur if the 
-                            //prediction was correct
-                            if (connCell.wasActive) {
-                                cell.synChanges.push([
-                                    seg, syn, permInc
-                                ]);
-                            } else {
-                                cell.synChanges.push([
-                                    seg, syn, -permDec
-                                ]);
-                            }
-
-/* TODO: train the segments that match the previous previous timestep? */
-
-                        }
-                    }
-                }
-            }
-        }
-
         //figure out which column to activate
         var kId = charToColId(pattern[di]); //column id
 
@@ -143,14 +111,7 @@ function initHTM() {
                 cell.active = true;
                 cell.learning = true;
                 activatedCell = true;
-
-                //apply all the changes to its synapses
-                for (var sci = 0; sci < cell.synChanges.length; sci++) {
-                    var seg = cell.synChanges[sci][0];
-                    var syn = cell.synChanges[sci][1];
-                    var permChange = cell.synChanges[sci][2];
-                    cell.distalDendrites[seg][syn][2] += permChange;
-                }
+                if (!cell.wasActive) cell.applySynChanges(cell);
             }
         }
 
@@ -162,6 +123,7 @@ function initHTM() {
             for (var ci = 0; ci < brain.cols[kId].cells.length; ci++) {
                 var cell = brain.cols[kId].cells[ci];
                 cell.active = true;
+                if (!cell.wasActive) cell.applySynChanges(cell);
             }
 
             //identify a single cell for learning either by looking at the
@@ -169,6 +131,8 @@ function initHTM() {
             var lcId = -1;
             var mostActivity = -1;
             for (var ci = 0; ci < brain.cols[kId].cells.length; ci++) {
+                var cell = brain.cols[kId].cells[ci];
+                var dendrites = cell.distalDendrites;
                 for (var seg = 0; seg < dendrites.length; seg++) {
                     var activity = getSynActivity([kId, ci], seg, 0);
                     if (activity > mostActivity) {
@@ -218,6 +182,67 @@ function initHTM() {
             brain.cols[kId].cells[lcId].distalDendrites.push(dendrite);
         }
 
+        //get rid of stale synapse changes
+        for (var ki = 0; ki < brain.cols.length; ki++) {
+            for (var ci = 0; ci < brain.cols[ki].cells.length; ci++) {
+                var cell = brain.cols[ki].cells[ci];
+                if ((cell.predicted || cell.wasActive) && !cell.active) {
+                    cell.synChanges = [];
+                }
+            }
+        }
+
+        //make predictions and train distal dendrite segments
+        for (var ki = 0; ki < brain.cols.length; ki++) {
+            for (var ci = 0; ci < brain.cols[ki].cells.length; ci++) {
+                var cell = brain.cols[ki].cells[ci];
+                var dendrites = cell.distalDendrites;
+
+                //check all the distal dendrite segments
+                var OrOfSegments = false;
+                for (var seg = 0; seg < dendrites.length; seg++) {
+                    var segment = dendrites[seg];
+                    var activity = getSynActivity([ki, ci], seg, permThresh);
+
+                    //if the number of active synapses on this segment
+                    //exceeds the activity ratio, then the segment is
+                    //active -> predict the column
+
+                    var segRatio = activity[0]/(Math.max(1, activity[1]));
+                    if (segRatio >= activityRatio) {
+                        OrOfSegments = true;
+
+                        //train all the synapses
+                        for (var syn = 0; syn < segment.length; syn++) {
+                            var endLoc = segment[syn];
+                            var connCol = brain.cols[endLoc[0]];
+                            var connCell = connCol.cells[endLoc[1]];
+                            //these changes will only occur if the 
+                            //prediction was correct
+                            if (connCell.wasActive) {
+                                cell.synChanges.push([
+                                    seg, syn, permInc
+                                ]);
+                            } else {
+                                cell.synChanges.push([
+                                    seg, syn, -permDec
+                                ]);
+                            }
+
+/* TODO: train the segments that match the previous previous timestep? */
+
+                        }
+                    }
+                }
+
+                //if (OrOfSegments && !cell.active) {
+                if (OrOfSegments) {
+                    cell.predicted = true;
+                }
+                else cell.predicted = false;
+            }
+        }
+
         //visualize the brain
         render(brain);
 
@@ -235,7 +260,7 @@ function initHTM() {
                 if (cell.wasPredicted) str += 'p';
                 str += ' ';
             }
-            console.log(str);
+            //console.log(str);
         }
 
         //advance to the future
@@ -248,13 +273,8 @@ function initHTM() {
 
                 cell.active = false;
                 cell.learning = false;
-                cell.predicted = false;
-                cell.synChanges = [];
             }
         }
-
-        //report out how long it took
-        console.log('That input took '+(+new Date() - start)+'ms.');
 
         //increment and call the next iteration
         di++;
@@ -268,17 +288,20 @@ function initHTM() {
             });
         }, 
         function() {
+            //report the correct-prediction rate
             console.log(
                 (pattern.length-numBursts)+'/'+pattern.length+' = '+
                 round(100*(pattern.length-numBursts)/pattern.length, 2)+
                 '% of inputs predicted.'
             );
+            //report out how long it took
+            console.log('That input took '+(+new Date() - start)+'ms.');
         }
     );
 }
 
 function getSynActivity(loc, segId, connectionThresh) {
-    if (arguments.length < 3) thresh = 0;
+    if (arguments.length < 3) connectionThresh = 0;
 
     var activeSyns = 0;
     var connectedSyns = 0; //# synapses w/ perm >= connectionThresh
@@ -288,7 +311,7 @@ function getSynActivity(loc, segId, connectionThresh) {
         var connectedCell = brain.cols[endLoc[0]].cells[endLoc[1]];
         if (segment[syn][2] >= connectionThresh) {
             connectedSyns++;
-            if (connectedCell.wasActive) activeSyns++;
+            if (connectedCell.active) activeSyns++;
         }
     }
 
