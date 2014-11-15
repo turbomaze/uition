@@ -11,7 +11,7 @@
 /**********
  * config */
 //HTM config
-var numCols = 4; //how many columns total
+var numCols = 36; //how many columns total
 var cellsPerCol = 9; //number of cells in each column
 
 //temporal learning
@@ -23,9 +23,9 @@ var activityRatio = 0.75; //75% of synapses active -> active dendrite
 var permThresh = 0.2;
 
 //rendering config
-var delay = 5; //in ms
-var tpoRad = 12; //radius of a cell in the rendering
-var tpoBrdr1 = 30; //column level border
+var delay = 35; //in ms
+var tpoRad = 10; //radius of a cell in the rendering
+var tpoBrdr1 = 25; //column level border
 var tpoBrdr2 = 3; //cell level border
 var w1 = Math.ceil(Math.sqrt(numCols));
 var w2 = Math.ceil(Math.sqrt(cellsPerCol));
@@ -235,33 +235,13 @@ function initHTM() {
                     }
                 }
 
-                //if (OrOfSegments && !cell.active) {
-                if (OrOfSegments) {
-                    cell.predicted = true;
-                }
+                if (OrOfSegments && !cell.active) cell.predicted = true;
                 else cell.predicted = false;
             }
         }
 
         //visualize the brain
         render(brain);
-
-        //log the state of the brain
-        for (var ci = 0; ci < brain.cols[0].cells.length; ci++) {
-            var str = (ci+1) + ': ';
-            for (var ki = 0; ki < brain.cols.length; ki++) {
-                var cell = brain.cols[ki].cells[ci];
-                str += '@';
-                if (cell.active) str += 'A';
-                if (cell.learning) str += 'L';
-                if (cell.predicted) str += 'P';
-                if (cell.wasActive) str += 'a';
-                if (cell.wasLearning) str += 'l';
-                if (cell.wasPredicted) str += 'p';
-                str += ' ';
-            }
-            //console.log(str);
-        }
 
         //advance to the future
         for (var ki = 0; ki < brain.cols.length; ki++) {
@@ -271,6 +251,7 @@ function initHTM() {
                 cell.wasLearning = cell.learning;
                 cell.wasPredicted = cell.predicted;
 
+                //clean up old state
                 cell.active = false;
                 cell.learning = false;
             }
@@ -334,8 +315,9 @@ function render(b) {
             var yo = (2*tpoRad+tpoBrdr2)*Math.floor(bi/w2);
             var xo = (2*tpoRad+tpoBrdr2)*(bi%w2);
 
-            var color = false;
-            if (b.cols[ai].cells[bi].active) color = '#B1E66C';
+            var color = false; //'#F28D9A';
+            if (b.cols[ai].cells[bi].active) color = '#A6E84F';
+            else if (b.cols[ai].cells[bi].wasActive) color = '#E2F0D1';
             else if (b.cols[ai].cells[bi].predicted) color = '#EBF08D';
             else color = '#EFEFEF'; //nothing
 
@@ -346,7 +328,9 @@ function render(b) {
 
 function charToColId(c) {
     //extremely basic for testing purposes
-    return c.toUpperCase().charCodeAt(0)-'A'.charCodeAt(0);
+    var pre = c.toUpperCase().charCodeAt(0)-'0'.charCodeAt(0);
+    if (pre > 9) return pre - 7;
+    else return pre;
 }
 
 /***********
