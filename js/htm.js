@@ -29,9 +29,9 @@ var minOverlap = 15;
 var historyFog = 500; //how far can the alg look into the past?
 
 //temporal learning
-var initPerm = 0.3; //initial permanance
-var permInc = 0.05; //how much permanances are incremented
-var permDec = 0.01; //"" decremented
+var initPerm = 0.26; //initial permanance
+var permInc = 0.03; //how much permanances are incremented
+var permDec = 0.03; //"" decremented
 var minSynThresh = 1; //min num active synapses for learning selection
 var activityRatio = 0.75; //this % of synapses active -> active dendrite
 var permThresh = 0.2;
@@ -58,6 +58,7 @@ var canvas;
 var ctx;
 
 var brain;
+var SP;
 var numBursts;
 var numNonBursts;
 
@@ -116,13 +117,27 @@ function initHTM() {
     //learn the pattern
     var start = +new Date();
     var di = 0; //data increment
-    var SP = new SpatialPooler(encoderParams.scalar.n);
+    SP = new SpatialPooler(encoderParams.scalar.n);
     var asyncLoopData = function(callback) {
         //report the current iteration
         $s('#time').innerHTML = di;
 
         //get this input's SDR
         var currSDR = SP.process(encode('scalar', pattern[di]));
+
+        //get all the cells that were just active and learning
+        var synapseBank = [];
+        for (var ki = 0; ki < brain.cols.length; ki++) {
+            var col = brain.cols[ki];
+            for (var ci = 0; ci < col.cells.length; ci++) {
+                var cell = brain.cols[ki].cells[ci];
+                if (cell.wasActive && cell.wasLearning) {
+                    //synapses have a destination and a permanence
+                    var synapse = [ki, ci, initPerm];
+                    synapseBank.push(synapse);
+                }
+            }
+        }
 
         //iterate the active cells
         for (var kId = 0; kId < currSDR.length; kId++) {
@@ -187,23 +202,17 @@ function initHTM() {
                 }
 
                 //now that you've chosen a cell, grow a new distal dendrite
-                //segment with synapses to all cells that were just active
-                //and learning
+                //segment with synapses to some of cells that were just
+                //active and learning
                 var dendrite = [];
-
-    /* TODO: subsampling; see the random permutation function you wrote */
-
-                //form synapses to the previously active & learning cells
-                for (var ki = 0; ki < brain.cols.length; ki++) {
-                    var col = brain.cols[ki];
-                    for (var ci = 0; ci < col.cells.length; ci++) {
-                        var cell = brain.cols[ki].cells[ci];
-                        if (cell.wasActive && cell.wasLearning) {
-                            //synapses have a destination and a permanence
-                            var synapse = [ki, ci, initPerm];
-                            dendrite.push(synapse);
-                        }
-                    }
+                //optimization: subsamples the set of all cells that were
+                //just active and learning
+                var synInThisDendr = getRandPerm(
+                    synapseBank.length,
+                    Math.ceil(0.5*synapseBank.length)
+                );
+                for (var synId = 0; synId < synInThisDendr.length; synId++) {
+                    dendrite.push(synapseBank[synInThisDendr[synId]]);
                 }
 
                 //add the distal dendrite
@@ -490,7 +499,7 @@ SpatialPooler.prototype.process = function(inp) {
     }
 
     //boost columns based on activity
-    var minActv = 0.01*maxActv;
+    var minActv = 0.08*maxActv;
     var maxBoost = 3;
     var boostSlope = (1 - maxBoost)/minActv;
     for (var ai = 0; ai < this.columns.length; ai++) {
