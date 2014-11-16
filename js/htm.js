@@ -5,14 +5,14 @@
 | @author Anthony  |
 | @version 0.1     |
 | @date 2014/07/12 |
-| @edit 2014/11/15 |
+| @edit 2014/11/16 |
 \******************/
 
 /**********
  * config */
 //HTM config
-var numCols = 81; //how many columns total
-var sparsity = 8/81;
+var numCols = 100; //how many columns total
+var sparsity = 10/100;
 var cellsPerCol = 9; //number of cells in each column
 
 //spatial pooler
@@ -22,26 +22,31 @@ var encoderParams = {
         w: 61,
         min: -1,
         max: 1
-    } 
+    },
+    alphanum: {
+        n: 180
+    }
 };
 var numPotSyn = 60;
-var minOverlap = 15;
+var minOverlap = 1;
 var historyFog = 500; //how far can the alg look into the past?
 
 //temporal learning
-var initPerm = 0.26; //initial permanance
-var permInc = 0.03; //how much permanances are incremented
-var permDec = 0.03; //"" decremented
+var initPerm = 0.26; //initial permanence
+var permInc = 0.05; //how much permanences are incremented
+var permDec = 0.015; //"" decremented
 var minSynThresh = 1; //min num active synapses for learning selection
 var activityRatio = 0.75; //this % of synapses active -> active dendrite
+var activityThresh = 9; //# active synapses for a segment to be active
 var permThresh = 0.2;
+var numNewSyn = 10;
 
 //rendering config
-var delay = 0; //in ms
-var drawEvery = 10;
-var tpoRad = 4; //radius of a cell in the rendering
-var tpoBrdr1 = 25; //column level border
-var tpoBrdr2 = 3; //cell level border
+var delay = 250; //in ms
+var drawEvery = 1;
+var tpoRad = 6; //radius of a cell in the rendering
+var tpoBrdr1 = 10; //column level border
+var tpoBrdr2 = 1; //cell level border
 var w1 = Math.ceil(Math.sqrt(numCols));
 var w2 = Math.ceil(Math.sqrt(cellsPerCol));
 var dims = [
@@ -51,6 +56,15 @@ var dims = [
 
 /*************
  * constants */
+var NOW = 408; //current timestep
+var BE4 = 834; //previous timestep
+var GROW = true; //grow new synapses
+var MNTN = false; //maintain the current synapses; i.e. don't grow
+var ACTV = 4677; //signals that a synapse was active
+var INAC = 1446; //"" inactive
+var NEW = 438; //indicates that a synChange is for a new synapse
+var PRNF = true; //positive reinforcement
+var NRNF = false; //negative reinforcement
 
 /*********************
  * working variables */
@@ -78,13 +92,21 @@ function initHTM() {
     numNonBursts = 0;
 
     //the pattern to learn
-    var patnLen = 2000;
+    /* sinusoid
+    var patternType = 'scalar';
     var pattern = [];
-    for (var ai = 0; ai < patnLen; ai++) {
+    for (var ai = 0; ai < 2000; ai++) {
         pattern.push(Math.sin(ai*Math.PI/10));
     }
+    */
+    var patternType = 'alphanum';
+    var pattern = 'abababababababababab'.split('');
 
     //initialize the brain
+    var start = +new Date();
+    SP = new SpatialPooler(
+        encoderParams[patternType].n, patternType
+    );
     brain = {};
     brain.cols = [];
     for (var ai = 0; ai < numCols; ai++) {
@@ -98,32 +120,94 @@ function initHTM() {
                 wasActive: false,
                 wasLearning: false,
                 wasPredicted: false,
+                predictingSegWasLearn: false,
                 distalDendrites: [],
                 synChanges: [],
-                applySynChanges: function(cell) {
-                    //apply all the changes to its synapses
-                    for (var sci = 0; sci < cell.synChanges.length; sci++) {
-                        var seg = cell.synChanges[sci][0];
-                        var syn = cell.synChanges[sci][1];
-                        var permChange = cell.synChanges[sci][2];
-                        cell.distalDendrites[seg][syn][2] += permChange;
+                applySynChanges: function(cell, posReinforce) {
+                    for (var ci = 0; ci < cell.synChanges; ci++) {
+                        var change = cell.synChanges[ci];
+                        var seg = cell.distalDendrites[change[1]];
+                        switch (change[0]) {
+                            case ACTV:
+                                if (posReinforce) {
+                                    seg[change[2]][2] += permInc;
+                                } else {
+                                    seg[change[2]][2] -= permDec;
+                                }
+                                break;
+                            case INAC:
+                                if (posReinforce) {
+                                    seg[change[2]][2] -= permDec;
+                                }
+                                break;
+                            case NEW:
+                                seg.push([
+                                    change[2], change[3], initPerm
+                                ]);
+                                break;
+                        }
                     }
                     cell.synChanges = []; //changes applied so empty queue
+                },
+                proposeSynChanges: function(cell, t, segId, bank, addSyns) {
+                    if (segId < 0) return false;
+
+                    var seg = cell.distalDendrites[segId];
+                    var activeSynLocs = [];
+                    for (var si = 0; si < seg.length; si++) {
+                        var connCol = brain.cols[seg[si][0]];
+                        var connCell = connCol.cells[seg[si][1]];
+                        if (t === NOW && connCell.active ||
+                            t === BE4 && connCell.wasActive) {
+                            activeSynLocs.push([seg[si][0], seg[si][1]]);
+                            cell.synChanges.push([
+                                ACTV, segId, si
+                            ]);
+                        } else {
+                            cell.synChanges.push([
+                                INAC, segId, si
+                            ]);
+                        }
+                    }
+
+                    if (addSyns && t === BE4) {
+/* TODO: protection against not enough? */
+                        var numSyns = numNewSyn - activeSynLocs.length;
+                        var newSynIds = getRandPerm(bank.length, numSyns);
+                        for (var si = 0; si < newSynIds.length; si++) {
+                            var sb = bank[newSynIds[si]];
+                            cell.synChanges.push([
+                                NEW, segId, sb[0], sb[1]
+                            ]);
+                        }
+                    }
+                },
+                growDistalDendrite: function(cell, bank) {
+                    var dendrite = [];
+                    var numSyns = numNewSyn;
+                    var newSynIds = getRandPerm(bank.length, numSyns);
+/* TODO: why are some dendrites so empty? */
+                    if (newSynIds.length === 0) return;
+                    for (var si = 0; si < newSynIds.length; si++) {
+                        var sb = bank[newSynIds[si]];
+                        dendrite.push([
+                            sb[0], sb[1], initPerm
+                        ]);
+                    }
+                    cell.distalDendrites.push(dendrite);
                 }
             });
         }
     }
 
     //learn the pattern
-    var start = +new Date();
     var di = 0; //data increment
-    SP = new SpatialPooler(encoderParams.scalar.n);
     var asyncLoopData = function(callback) {
         //report the current iteration
         $s('#time').innerHTML = di;
 
         //get this input's SDR
-        var currSDR = SP.process(encode('scalar', pattern[di]));
+        var currSDR = SP.process(pattern[di]);
 
         //get all the cells that were just active and learning
         var synapseBank = [];
@@ -145,14 +229,18 @@ function initHTM() {
 
             //given an active column, activate predicted cells
             var activatedCell = false;
+            var choseLearning = false;
             for (var ci = 0; ci < brain.cols[kId].cells.length; ci++) {
                 //activate predicted cells
                 var cell = brain.cols[kId].cells[ci];
-                if (cell.predicted) {
+                if (cell.wasPredicted) {
                     cell.active = true;
-                    cell.learning = true;
                     activatedCell = true;
-                    if (!cell.wasActive) cell.applySynChanges(cell);
+
+                    if (cell.predictingSegWasLearn) {
+                        choseLearning = true;
+                        cell.learning = true;
+                    }
                 }
             }
 
@@ -164,31 +252,28 @@ function initHTM() {
                 for (var ci = 0; ci < brain.cols[kId].cells.length; ci++) {
                     var cell = brain.cols[kId].cells[ci];
                     cell.active = true;
-                    if (!cell.wasActive) cell.applySynChanges(cell);
                 }
+            } else numNonBursts++;
 
+            if (!choseLearning) {
                 //identify a single cell for learning either by looking at
                 //the one that was closest to being predicted
                 var lcId = -1;
+                var lcSegId = -1;
                 var mostActivity = -1;
                 for (var ci = 0; ci < brain.cols[kId].cells.length; ci++) {
                     var cell = brain.cols[kId].cells[ci];
-                    var dendrites = cell.distalDendrites;
-                    for (var seg = 0; seg < dendrites.length; seg++) {
-                        var activity = getSynActivity([kId, ci], seg, 0);
-                        if (activity > mostActivity) {
-                            mostActivity = activity;
-                            lcId = ci;
-                        }
+                    var bestSeg = getBestMatchingSeg(cell, BE4);
+                    if (bestSeg[0] !== -1) {
+                        lcId = ci;
+                        lcSegId = bestSeg[0];
+                        mostActivity = bestSeg[1];
                     }
                 }
-                if (mostActivity > minSynThresh) { //has to be > thresh
-                    brain.cols[kId].cells[lcId].learning = true;
-                } //otherwise you need to try the next method
 
                 //...or by choosing the cell that needs to learn the most
                 //(e.g., the one with the least # segments)
-                else {
+                if (lcSegId === -1) {
                     var leastNumSegs = Infinity;
                     var col = brain.cols[kId];
                     for (var ci = 0; ci < col.cells.length; ci++) {
@@ -198,36 +283,18 @@ function initHTM() {
                             lcId = ci;
                         }
                     }
-                    brain.cols[kId].cells[lcId].learning = true;
                 }
 
-                //now that you've chosen a cell, grow a new distal dendrite
-                //segment with synapses to some of cells that were just
-                //active and learning
-                var dendrite = [];
-                //optimization: subsamples the set of all cells that were
-                //just active and learning
-                var synInThisDendr = getRandPerm(
-                    synapseBank.length,
-                    Math.ceil(0.5*synapseBank.length)
-                );
-                for (var synId = 0; synId < synInThisDendr.length; synId++) {
-                    dendrite.push(synapseBank[synInThisDendr[synId]]);
-                }
+                brain.cols[kId].cells[lcId].learning = true;
+                choseLearning = true;
 
-                //add the distal dendrite
-                brain.cols[kId].cells[lcId].distalDendrites.push(dendrite);
-            } else {
-                numNonBursts++;
-            }
-        }
-
-        //get rid of stale synapse changes
-        for (var ki = 0; ki < brain.cols.length; ki++) {
-            for (var ci = 0; ci < brain.cols[ki].cells.length; ci++) {
-                var cell = brain.cols[ki].cells[ci];
-                if ((cell.predicted || cell.wasActive) && !cell.active) {
-                    cell.synChanges = [];
+                var lCell = brain.cols[kId].cells[lcId];
+                if (lcSegId === -1) { //no good match? grow one.
+                    lCell.growDistalDendrite(cell, synapseBank);
+                } else { //a kinda good match? reinforce it.
+                    lCell.proposeSynChanges(
+                        lCell, BE4, lcSegId, synapseBank, GROW
+                    );
                 }
             }
         }
@@ -237,46 +304,55 @@ function initHTM() {
             for (var ci = 0; ci < brain.cols[ki].cells.length; ci++) {
                 var cell = brain.cols[ki].cells[ci];
                 var dendrites = cell.distalDendrites;
+                cell.predicted = false; //not yet it isn't!
+                cell.predictingSegWasLearn = false; //don't know yet
 
                 //check all the distal dendrite segments
-                var OrOfSegments = false;
                 for (var seg = 0; seg < dendrites.length; seg++) {
                     var segment = dendrites[seg];
-                    var activity = getSynActivity([ki, ci], seg, permThresh);
+                    var activity = getSynActivity(
+                        cell, seg, NOW, permThresh
+                    );
 
                     //if the number of active synapses on this segment
                     //exceeds the activity ratio, then the segment is
                     //active -> predict the column
-
                     var segRatio = activity[0]/(Math.max(1, activity[1]));
-                    if (segRatio >= activityRatio) {
-                        OrOfSegments = true;
+                    if (segRatio >= activityRatio ||
+                        activity[0] >= activityThresh) {
+                        cell.predicted = true;
 
-                        //train all the synapses
-                        for (var syn = 0; syn < segment.length; syn++) {
-                            var endLoc = segment[syn];
-                            var connCol = brain.cols[endLoc[0]];
-                            var connCell = connCol.cells[endLoc[1]];
-                            //these changes will only occur if the 
-                            //prediction was correct
-                            if (connCell.wasActive) {
-                                cell.synChanges.push([
-                                    seg, syn, permInc
-                                ]);
-                            } else {
-                                cell.synChanges.push([
-                                    seg, syn, -permDec
-                                ]);
-                            }
-
-/* TODO: train the segments that match the previous previous timestep? */
-
+                        //figure out if this segment (this cell's predicting
+                        //segment) would be activated by learning cells
+                        var lRat = activity[2]/(Math.max(1, activity[1]));
+                        if (lRat >= activityRatio ||
+                            activity[2] >= activityThresh) {
+                            cell.predictingSegWasLearn = true;
                         }
+
+                        //learning
+                        cell.proposeSynChanges(
+                            cell, NOW, seg, synapseBank, MNTN
+                        ); //reinforce the synapses that predicted this
+
+                        var pastSeg = getBestMatchingSeg(cell, BE4);
+                        cell.proposeSynChanges(
+                            cell, BE4, pastSeg[0], synapseBank, MNTN
+                        );
                     }
                 }
+            }
+        }
 
-                if (OrOfSegments && !cell.active) cell.predicted = true;
-                else cell.predicted = false;
+        //apply the synapse changes
+        for (var ki = 0; ki < brain.cols.length; ki++) {
+            for (var ci = 0; ci < brain.cols[ki].cells.length; ci++) {
+                var cell = brain.cols[ki].cells[ci];
+                if (cell.learning) {
+                    cell.applySynChanges(cell, PRNF);
+                } else if (cell.wasPredicted && !cell.predicted) {
+                    cell.applySynChanges(cell, NRNF);
+                }
             }
         }
 
@@ -321,28 +397,50 @@ function initHTM() {
     );
 }
 
-function getSynActivity(loc, segId, connectionThresh) {
+function getBestMatchingSeg(cell, t) {
+    //identify the most nearly active segment (most active synapses)
+    var lcSegId = -1;
+    var mostActivity = -1;
+    var dendrites = cell.distalDendrites;
+    for (var seg = 0; seg < dendrites.length; seg++) {
+        var activity = getSynActivity(cell, seg, t, 0);
+        if (activity > mostActivity) {
+            mostActivity = activity;
+            lcId = ci;
+            lcSegId = seg;
+        }
+    }
+    if (mostActivity > minSynThresh) { //has to be > thresh
+        return [lcSegId, mostActivity];
+    } else return [-1];
+}
+
+function getSynActivity(cell, segId, t, connectionThresh) {
     if (arguments.length < 3) connectionThresh = 0;
 
     var activeSyns = 0;
+    var learningSyns = 0;
     var connectedSyns = 0; //# synapses w/ perm >= connectionThresh
-    var segment = brain.cols[loc[0]].cells[loc[1]].distalDendrites[segId];
+    var segment = cell.distalDendrites[segId];
     for (var syn = 0; syn < segment.length; syn++) {
         var endLoc = segment[syn];
         var connectedCell = brain.cols[endLoc[0]].cells[endLoc[1]];
         if (segment[syn][2] >= connectionThresh) {
             connectedSyns++;
-            if (connectedCell.active) activeSyns++;
+            if (connectedCell.active && t === NOW ||
+                connectedCell.wasActive && t === BE4) activeSyns++;
+            if (connectedCell.learning && t === NOW ||
+                connectedCell.wasLearning && t === BE4) learningSyns++;
         }
     }
 
-    return [activeSyns, connectedSyns];
+    return [activeSyns, connectedSyns, learningSyns];
 }
 
 function encode(type, value) {
+    var p = encoderParams[type];
     switch (type) {
         case 'scalar':
-            var p = encoderParams[type];
             var buckets = 1 + (p.n - p.w);
             var bucket = Math.floor(buckets*(value-p.min)/(p.max-p.min));
             bucket = Math.min(Math.max(0, bucket), buckets-1);
@@ -351,6 +449,19 @@ function encode(type, value) {
             for (var ai = 0; ai < bucket; ai++) out.push(false);
             for (var ai = 0; ai < p.w; ai++) out.push(true);
             for (var ai = 0; ai < p.n-(bucket+p.w); ai++) out.push(false);
+
+            return out;
+        case 'alphanum':
+            var AVal = 'A'.charCodeAt(0);
+            var numEach = p.n/36;
+            var converted = value.toUpperCase().charCodeAt(0) - AVal;
+            if (converted < 0) converted += 43; //put digits at the end
+            var stpt = numEach*converted; //converted is in [0, 35]
+
+            var out = [];
+            for (var ai = 0; ai < stpt; ai++) out.push(false);
+            for (var ai = stpt; ai < stpt+numEach; ai++) out.push(true);
+            for (var ai = stpt+numEach; ai < p.n; ai++) out.push(false);
 
             return out;
         default:
@@ -386,16 +497,10 @@ function render(b) {
     }
 }
 
-function charToColId(c) {
-    //extremely basic for testing purposes
-    var pre = c.toUpperCase().charCodeAt(0)-'0'.charCodeAt(0);
-    if (pre > 9) return pre - 7;
-    else return pre;
-}
-
 /***********
  * objects */
-function SpatialPooler(s) { //s = len of transformed inputs in bits
+function SpatialPooler(s, inpType) { //s = len of transformed inputs in bits
+    this.inpType = inpType;
     this.columns = [];
     for (var ai = 0; ai < numCols; ai++) {
         this.columns.push(new Column(ai, s));
@@ -435,8 +540,9 @@ SpatialPooler.prototype.getOvlpThreshold = function(overlaps) {
     return k;
 };
 SpatialPooler.prototype.getSDR = function(inp) {
+    var inpSDR = encode(this.inpType, inp);
     var sdr = '';
-    var overlaps = this.getOverlaps(inp);
+    var overlaps = this.getOverlaps(inpSDR);
     var thresh = this.getOvlpThreshold(overlaps);
     for (var ai = 0; ai < overlaps.length; ai++) {
         if (overlaps[ai] >= thresh) sdr += '1';
@@ -445,10 +551,11 @@ SpatialPooler.prototype.getSDR = function(inp) {
     return sdr;
 };
 SpatialPooler.prototype.process = function(inp) {
+    var inpSDR = encode(this.inpType, inp);
     var sdr = [];
 
     //activate the correct columns and collect data about it
-    var overlaps = this.getOverlaps(inp);
+    var overlaps = this.getOverlaps(inpSDR);
     var thresh = this.getOvlpThreshold(overlaps);
     var maxActv = 0;
     for (var ai = 0; ai < overlaps.length; ai++) {
@@ -456,13 +563,11 @@ SpatialPooler.prototype.process = function(inp) {
         if (overlaps[ai] > 0 && overlaps[ai] >= thresh) {
             col.state = 1; //active
 
-/* TODO: fix ai/bi bug!!! omg smart!!! */
-
             //adjust the permanences because it's active
             for (var bi = 0; bi < col.bitIndices.length; bi++) {
                 if (col.permanences[bi] >= permThresh) { //connected
-                    if (inp[col.bitIndices[bi]]) { //and input bit is true?
-                        col.permanences[bi] += permInc; //strengthen the conn.
+                    if (inpSDR[col.bitIndices[bi]]) { //& input bit is true?
+                        col.permanences[bi] += permInc; //strengthen the conn
                         if (col.permanences[bi] > 1) col.permanences[bi] = 1;
                     } else { //connected and false?
                         col.permanences[bi] -= permDec; //weaken the conn.
