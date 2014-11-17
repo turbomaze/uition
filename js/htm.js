@@ -11,9 +11,9 @@
 /**********
  * config */
 //HTM config
-var numCols = 100; //how many columns total
-var sparsity = 10/100;
-var cellsPerCol = 9; //number of cells in each column
+var numCols = 2025; //how many columns total
+var sparsity = 40/2025;
+var cellsPerCol = 32; //number of cells in each column
 
 //spatial pooler
 var encoderParams = {
@@ -34,18 +34,17 @@ var historyFog = 500; //how far can the alg look into the past?
 //temporal learning
 var initPerm = 0.26; //initial permanence
 var permInc = 0.05; //how much permanences are incremented
-var permDec = 0.015; //"" decremented
-var minSynThresh = 1; //min num active synapses for learning selection
-var activityRatio = 0.75; //this % of synapses active -> active dendrite
+var permDec = 0.03; //"" decremented
+var permThresh = 0.2; //determines whether or not a synapse is connected
+var numNewSyn = 14; //controls how many synapses are added
 var activityThresh = 9; //# active synapses for a segment to be active
-var permThresh = 0.2;
-var numNewSyn = 10;
+var minSynThresh = 6; //min num active synapses for learning selection
 
 //rendering config
-var delay = 250; //in ms
-var drawEvery = 1;
-var tpoRad = 6; //radius of a cell in the rendering
-var tpoBrdr1 = 10; //column level border
+var delay = 0; //in ms
+var drawEvery = 0;
+var tpoRad = 1; //radius of a cell in the rendering
+var tpoBrdr1 = 2; //column level border
 var tpoBrdr2 = 1; //cell level border
 var w1 = Math.ceil(Math.sqrt(numCols));
 var w2 = Math.ceil(Math.sqrt(cellsPerCol));
@@ -96,17 +95,40 @@ function initHTM() {
     var patternType = 'scalar';
     var pattern = [];
     for (var ai = 0; ai < 2000; ai++) {
-        pattern.push(Math.sin(ai*Math.PI/10));
+        pattern.push(Math.sin(ai*Math.PI/(2*Math.E)));
     }
     */
     var patternType = 'alphanum';
-    var pattern = 'abababababababababab'.split('');
+    var pattern = (
+        'sdfkshdflkjhfdalkjhdsfkjhalkgsdhkladjsfadlhjkfhlkjdfhkdjgha'+
+        'lkfgjhlakdhflkjasgdflkjhadgkljadsfgadkljghallkajdslhjkafahs'+
+        'gkjasdlkjfgalkdjghkgdlkdjhflakdsjagkljadhfllakjsdflajkhdahs'+
+        'jasdfghlkaghlkjsdhflkajsdgladhsglkjsdfhljkglaksdjlajksdgasd'+
+        'ghdfkjhdflksdflkgjhdfgkljhsdfglkjdsfhgkjsfdakljsdhflkajhgas'+
+        'lksjdhflakjdsfhlakjdgdkjhflkadjsggsdfahlkjalajkgdlkajsdasdk'+
+        'lkajdhfaksdgfkdjsaglaksdfglsadkjasdlkjfsadllahjksglkajsdalk'+
+        'akjsdflgaklajsdhlkasjdglskadjalskdfgaskldjhdlakjhsfkjahdsgk'+
+        'gaksjdhlkjfgsalksfjfdfglkjhghasdfkgasdlkgjhlasdhjflajkdhsdf'+
+        'lakjdgkajdfhkjfghlaksjdhgsadlksjdhfldasglakslajkhdlahjkgasd'+
+        'alksdfkjsahdfkjsdhagkjadsghlkjashlkajfgakjlslajksdflkajdslk'+
+        'lakjsdhljkaghdslkjhlasdgalksdjhlkasdgjlkdjslajsdhaljkdgasdf'+
+        'lkashgfljkahgdlkjdshfasgdlkjdhflkajsdglaksjdlkajdskjasdlkas'+
+        'lkasghljkahdskjaslfdgkjahsdflkgasdlkjshdfadslkajsdlkajdslas'+
+        'asdfhkjadhglkdjsflkagdlkadjfhadgskhasldkfhslakdjsglakjdgdfa'+
+        'klagjghajlkasdlkjgadskgfdkljadsadsgjkgdsaakjlsdgfadjkalkkld'+
+        'adksjlajkdgadsljkahsfjkldfgjasdalsjkdjhlkajsdhjasdksadkfksa'
+    ).split('');
 
-    //initialize the brain
-    var start = +new Date();
+    //give the spatial pooler time to learn about this data type
     SP = new SpatialPooler(
         encoderParams[patternType].n, patternType
     );
+    var alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    for (var ai = 0; ai < 1000; ai++) {
+        SP.process(alphabet.charAt(getRandInt(0, alphabet.length)));
+    }
+    
+    //initialize the brain
     brain = {};
     brain.cols = [];
     for (var ai = 0; ai < numCols; ai++) {
@@ -201,10 +223,12 @@ function initHTM() {
     }
 
     //learn the pattern
+    var start = +new Date();
     var di = 0; //data increment
     var asyncLoopData = function(callback) {
         //report the current iteration
         $s('#time').innerHTML = di;
+        $s('#input').innerHTML = pattern[di];
 
         //get this input's SDR
         var currSDR = SP.process(pattern[di]);
@@ -222,6 +246,8 @@ function initHTM() {
                 }
             }
         }
+
+/* TODO: why do only the last cells in each column get predicted? */
 
         //iterate the active cells
         for (var kId = 0; kId < currSDR.length; kId++) {
@@ -276,13 +302,18 @@ function initHTM() {
                 if (lcSegId === -1) {
                     var leastNumSegs = Infinity;
                     var col = brain.cols[kId];
+                    var lcIds = [];
                     for (var ci = 0; ci < col.cells.length; ci++) {
                         var cell = brain.cols[kId].cells[ci];
-                        if (cell.distalDendrites.length < leastNumSegs) {
+                        var numSegs = cell.distalDendrites.length;
+                        if (numSegs < leastNumSegs) {
                             leastNumSegs = cell.distalDendrites.length;
-                            lcId = ci;
+                            lcIds = [ci];
+                        } else if (numSegs === leastNumSegs) {
+                            lcIds.push(ci);
                         }
                     }
+                    lcId = lcIds[getRandInt(0, lcIds.length)];
                 }
 
                 brain.cols[kId].cells[lcId].learning = true;
@@ -290,7 +321,7 @@ function initHTM() {
 
                 var lCell = brain.cols[kId].cells[lcId];
                 if (lcSegId === -1) { //no good match? grow one.
-                    lCell.growDistalDendrite(cell, synapseBank);
+                    lCell.growDistalDendrite(lCell, synapseBank);
                 } else { //a kinda good match? reinforce it.
                     lCell.proposeSynChanges(
                         lCell, BE4, lcSegId, synapseBank, GROW
@@ -317,16 +348,12 @@ function initHTM() {
                     //if the number of active synapses on this segment
                     //exceeds the activity ratio, then the segment is
                     //active -> predict the column
-                    var segRatio = activity[0]/(Math.max(1, activity[1]));
-                    if (segRatio >= activityRatio ||
-                        activity[0] >= activityThresh) {
+                    if (activity[0] >= activityThresh) {
                         cell.predicted = true;
 
                         //figure out if this segment (this cell's predicting
                         //segment) would be activated by learning cells
-                        var lRat = activity[2]/(Math.max(1, activity[1]));
-                        if (lRat >= activityRatio ||
-                            activity[2] >= activityThresh) {
+                        if (activity[2] >= activityThresh) {
                             cell.predictingSegWasLearn = true;
                         }
 
@@ -404,20 +431,18 @@ function getBestMatchingSeg(cell, t) {
     var dendrites = cell.distalDendrites;
     for (var seg = 0; seg < dendrites.length; seg++) {
         var activity = getSynActivity(cell, seg, t, 0);
-        if (activity > mostActivity) {
-            mostActivity = activity;
-            lcId = ci;
+        if (activity[0] > mostActivity) {
+            mostActivity = activity[0];
             lcSegId = seg;
         }
     }
+
     if (mostActivity > minSynThresh) { //has to be > thresh
         return [lcSegId, mostActivity];
     } else return [-1];
 }
 
 function getSynActivity(cell, segId, t, connectionThresh) {
-    if (arguments.length < 3) connectionThresh = 0;
-
     var activeSyns = 0;
     var learningSyns = 0;
     var connectedSyns = 0; //# synapses w/ perm >= connectionThresh
@@ -470,6 +495,9 @@ function encode(type, value) {
     }
 }
 
+/* TODO: abstract the render parameters out so you can use it for
+         multiple canvases */
+
 function render(b) {
     //dampen old activations
     ctx.fillStyle = 'rgba(255, 255, 255, 1)';
@@ -488,8 +516,8 @@ function render(b) {
 
             var color = false; //'#F28D9A';
             if (b.cols[ai].cells[bi].active) color = '#A6E84F';
+            else if (b.cols[ai].cells[bi].predicted) color = '#F2B1C9';
             else if (b.cols[ai].cells[bi].wasActive) color = '#E2F0D1';
-            else if (b.cols[ai].cells[bi].predicted) color = '#EBF08D';
             else color = '#EFEFEF'; //nothing
 
             if (color) drawPoint(x+xo, y+yo, tpoRad, color);
@@ -499,6 +527,15 @@ function render(b) {
 
 /***********
  * objects */
+
+/* TODO: test the spatial pooler by rendering multiple SDRs of a few
+         different inputs SEPARATE from the processing of the SP. As
+         in, have 26 canvases each with an SDR each visualizing what
+         the SP thinks a letter of the alphabet looks like at that
+         point in time. Input a string of letters separately and see
+         how the representations change. Have some numerical info like
+         the number of active columns beneath each SDR visualization */
+
 function SpatialPooler(s, inpType) { //s = len of transformed inputs in bits
     this.inpType = inpType;
     this.columns = [];
