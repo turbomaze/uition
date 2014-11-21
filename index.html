@@ -4,13 +4,23 @@
         <meta charset="UTF-8">
         <title>Hierarchical Temporal Memory System</title>
 
+        <link rel="stylesheet" type="text/css" href="css/toast.css">
+
         <script src="js/htm.js"></script>
     </head>
     <body>
-        <canvas id="canvas"></canvas>
-        <div>
-            t = <span id="time">undefined</span><br>
-            input = <span id="input">undefined</span>
-        </div
+        <div class="container" style="max-width: 100%;">
+            <div class="grid">
+                <div class="unit one-of-four">
+                    <canvas id="canvas"></canvas>
+                    <div class="unit span-grid">
+                        t = <span id="time">undefined</span><br>
+                        input = <span id="input">undefined</span>
+                    </div>
+                </div>
+                <div class="unit three-of-four" id="alphanum-canvs"></div>
+            </div>
+        </div>
+        <br>
     </body>
 </html>
