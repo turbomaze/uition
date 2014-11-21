@@ -43,7 +43,7 @@ var activityThresh = 6; //9# active synapses for a segment to be active
 var minSynThresh = 3; //6min num active synapses for learning selection
 
 //rendering config
-var drawEvery = 100; //how often to draw the TP
+var drawEvery = 1000; //how often to draw the TP
 var tpoRad = 2.5; //radius of a cell in the rendering
 var tpoBrdr1 = 2; //column level border
 var tpoBrdr2 = 0; //cell level border
@@ -55,7 +55,7 @@ var dims = [
     h1*w2*2*tpoRad+(h1-1)*tpoBrdr1+(w2-1)*h1*tpoBrdr2
 ];
 var SPRndCfg = {
-    drawEvery: 100,
+    drawEvery: 500,
     rad: 1,
     brdr: 1,
     w: Math.ceil(Math.sqrt(numCols))
@@ -165,6 +165,8 @@ function initHTM() {
         //report the current iteration
         $s('#time').innerHTML = di;
         $s('#input').innerHTML = pattern[di];
+        var pct = round(100*numNonBursts/(numBursts+numNonBursts), 2);
+        $s('#pred-actv-pct').innerHTML = pct+'%';
 
         //HTM
         TP.process(
