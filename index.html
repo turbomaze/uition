@@ -12,17 +12,23 @@
     <body>
         <div class="container" style="max-width: 100%;">
             <div class="grid">
-                <div class="unit one-of-four">
-                    <canvas id="canvas"></canvas>
-                    <div class="unit span-grid">
-                        t = <span id="time">undefined</span><br>
-                        input = <span id="input">undefined</span><br>
-                        % cols predicted = <span id="pred-actv-pct">undefined</span>
+                <div class="unit span-grid">
+                    <h2 style="text-align: center">uition.js -- Hierarchical Temporal Memory</h2>
+                    <hr>
+                    <div class="unit one-of-two">
+                        <div class="unit four-of-five" style="text-align: center">
+                            <h3>Temporal Memory</h3>
+                            <canvas id="canvas"></canvas>
+                        </div>
+                        <div class="unit one-of-five">
+                            <h3>Real Time Stats</h3>
+                            t: <span id="time">undefined</span><br>
+                            input: <span id="input">undefined</span><br>
+                            cols predicted: <span id="pred-actv-pct">undefined</span>
+                        </div>
                     </div>
                 </div>
-                <div class="unit three-of-four" id="alphanum-canvs"></div>
             </div>
         </div>
-        <br>
     </body>
 </html>

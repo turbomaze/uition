@@ -11,8 +11,8 @@
 /**********
  * config */
 //HTM config
-var numCols = 512; //how many columns total
-var sparsity = 21/512; //percentage of columns that are active
+var numCols = 2048; //how many columns total
+var sparsity = 41/2048; //percentage of columns that are active
 var cellsPerCol = 9; //number of cells in each column
 var delay = 0; //in ms
 
@@ -29,8 +29,8 @@ var encoderParams = {
         w: 30,
     },
     coordinate: {
-        n: 121,
-        w: 21,
+        n: 160,
+        w: 32,
         dim: 2,
         res: 6,
         radius: 7
@@ -54,20 +54,13 @@ var drawEvery = 1; //how often to draw the TP
 var tpoRad = 2.5; //radius of a cell in the rendering
 var tpoBrdr1 = 2; //column level border
 var tpoBrdr2 = 0; //cell level border
-var w1 = Math.ceil(Math.sqrt(numCols/1.9));
+var w1 = Math.ceil(Math.sqrt(numCols/0.9707));
 var h1 = Math.ceil(numCols/w1);
 var w2 = Math.ceil(Math.sqrt(cellsPerCol));
 var dims = [
     w1*w2*2*tpoRad+(w1-1)*tpoBrdr1+(w2-1)*w1*tpoBrdr2,
     h1*w2*2*tpoRad+(h1-1)*tpoBrdr1+(w2-1)*h1*tpoBrdr2
 ];
-var SPRndCfg = {
-    drawEvery: 0,
-    rad: 1,
-    brdr: 1,
-    w: Math.ceil(Math.sqrt(numCols))
-};
-SPRndCfg.canvWid = 2*SPRndCfg.rad*SPRndCfg.w+SPRndCfg.brdr*(SPRndCfg.w-1);
 
 /*************
  * constants */
@@ -113,24 +106,6 @@ function initHTM() {
         mousePos = [e.clientX, e.clientY]; 
     });
 
-    //create and load the alphanum canvases needed to test the spatial pooler
-    var bp = '<div class="unit one-of-six" style="text-align: center">'+
-                  '<canvas width="'+SPRndCfg.canvWid+'" '+
-                          'height="'+SPRndCfg.canvWid+'" '+
-                          'id="anc-{letter}"></canvas>'+
-                  '<br>'+
-                  '<span>{letter}</span>'+
-             '</div>';
-    for (var ai = 0; ai < alphanum.length; ai++) { //add a canv per symbol
-        $s('#alphanum-canvs').innerHTML += bp.replace(
-            /\{letter\}/g, alphanum.charAt(ai)
-        );
-    }
-    for (var ai = 0; ai < alphanum.length; ai++) { //load the canvs
-        alphaCanvs.push($s('#anc-'+alphanum.charAt(ai)));
-        alphaCtxs.push(alphaCanvs[ai].getContext('2d'));
-    } 
-
     //misc working vars
     numBursts = 0;
     numNonBursts = 0;
@@ -149,7 +124,7 @@ function initHTM() {
     ).split(''); //Article 1 of US constitution
 
     patternType = 'coordinate';
-    pattern = [];
+    pattern = []; //mouse movements
     
     //initialize the SP and TP
     SP = new SpatialPooler(patternType);
@@ -159,8 +134,7 @@ function initHTM() {
     var start = +new Date();
     var di = 0; //data increment
     var asyncLoopData = function(callback) {
-        pattern[di] = mousePos.slice(0);
-        console.log('p '+pattern[di]);
+        pattern[di] = mousePos.slice(0); //for the mouse
 
         //report the current iteration
         $s('#time').innerHTML = di;
@@ -173,14 +147,6 @@ function initHTM() {
             SP.process(pattern[di])
         );
 
-        //visualize the spatial pooler outputs for all the symbols
-        if (di%SPRndCfg.drawEvery === 0) {
-            for (var ai = 0; ai < alphanum.length; ai++) {
-                var spo = SP.getSDR(alphanum.charAt(ai));
-                renderSP(spo, alphaCtxs[ai]);
-            }
-        }
-
         //visualize the temporal pooler
         if (di%drawEvery === 0) render(TP);
 
@@ -190,7 +156,7 @@ function initHTM() {
     };
     asyncLoop(
         //pattern.length, //how many times to loop
-        1000, //how many times to loop
+        1000*1000, //how many times to loop
         function(loop) {
             asyncLoopData(function(keepGoing) {
                 if (keepGoing) loop.next();
@@ -319,29 +285,10 @@ function render(b) {
             var color = false; //'#F28D9A';
             if (b.cols[ai].cells[bi].wasActive) color = '#A6E84F';
             else if (b.cols[ai].cells[bi].wasPredicted) color = '#F2B1C9';
-            else color = '#EFEFEF'; //nothing
+            //else color = '#EFEFEF'; //nothing
 
             if (color) drawPoint(ctx, x+xo, y+yo, tpoRad, color);
         }
-    }
-}
-
-function renderSP(spo, theCtx) {
-    //dampen old activations
-    theCtx.fillStyle = 'rgba(255, 255, 255, 1)';
-    theCtx.fillRect(0, 0, canvas.width, canvas.height);
-
-    //draw new ones
-    var spoIncrFactor = 2*SPRndCfg.rad + SPRndCfg.brdr;
-    for (var ai = 0; ai < spo.length; ai++) { //for each column
-        var y = Math.floor(ai/SPRndCfg.w);
-            y = spoIncrFactor*y + SPRndCfg.rad;
-        var x = ai%SPRndCfg.w;
-            x = spoIncrFactor*x + SPRndCfg.rad;
-        var color = false;
-        if (spo[ai]) color = '#A6E84F';
-
-        if (color) drawPoint(theCtx, x, y, tpoRad, color);
     }
 }
 
@@ -710,9 +657,9 @@ SpatialPooler.prototype.getOvlpThreshold = function(overlaps) {
             k = ai;
         } else { //error is less than zero
             //if the most recent error is better OR if the previous error
-            //doesn't include any columns whatsoever
+            //hardly includes any columns
             if (Math.abs(error) < Math.abs(lowestError) ||
-                Math.abs(lowestError) === goalNum) {
+                -lowestError > 0.5*goalNum) {
                 return ai;
             } else {
                 return k;
