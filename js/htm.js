@@ -45,6 +45,7 @@ var initPerm = 0.20; //initial permanence
 var permThresh = 0.20; //determines whether or not a synapse is connected
 var permInc = 0.04; //how much permanences are incremented
 var permDec = 0.03; //"" decremented
+var maxDistDendrites = 8; //max # distal dendrites per cell
 var numNewSyn = 14; //controls how many synapses are added
 var activityThresh = 9; //# active synapses for a segment to be active
 var minSynThresh = 6; //min num active synapses for learning selection
@@ -532,6 +533,9 @@ TemporalPooler.prototype.teachAPromisingCell = function(colId) {
 
     if (learningIds[1] === -1) { //no good segments? grow one.
         lCell.growDistalDendrite(this.synapseBank);
+        if (lCell.distalDendrites.length > maxDistDendrites) {
+            lCell.distalDendrites.shift();
+        }
     } else { //a kinda good match? reinforce it.
         this.proposeSynChanges(
             lCell, BE4, learningIds[1], this.synapseBank, GROW
