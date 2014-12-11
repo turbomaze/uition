@@ -166,89 +166,6 @@ function initHTM() {
     );
 }
 
-function encode(type, cfg, value) {
-    var p = cfg[type];
-    switch (type) {
-        case 'scalar':
-            var buckets = 1 + (p.n - p.w);
-            var bucket = Math.floor(buckets*(value-p.min)/(p.max-p.min));
-            bucket = Math.min(Math.max(0, bucket), buckets-1);
-
-            var out = [];
-            for (var ai = 0; ai < bucket; ai++) out.push(false);
-            for (var ai = 0; ai < p.w; ai++) out.push(true);
-            for (var ai = 0; ai < p.n-(bucket+p.w); ai++) out.push(false);
-
-            return out;
-        case 'alphanum':
-            function randCycle(num, range) {
-                var a = 71693, b = 4549;
-                return (a*num+b)%range;
-            }
-            
-            var AVal = 'A'.charCodeAt(0);
-            var categoryIdx = value.toUpperCase().charCodeAt(0) - AVal;
-            if (categoryIdx < 0) categoryIdx += 43; //put digits at the end
-
-            var curr = randCycle(categoryIdx, 1000*p.n);
-            var out = [];
-            for (var ai = 0; ai < p.n; ai++) out.push(false);
-            for (var ai = 0; ai < p.w; ai++) {
-                out[curr%p.n] = true;
-                curr = randCycle(curr, 24499);
-            }
-
-            return out; //guaranteed to have <= w "trues" guaranteed
-        case 'coordinate':
-            function getOrders(d, bds, ret, currLoc, cd) {
-                if (arguments.length < 4) {
-                    currLoc = [];
-                    cd = d;
-                }
-                if (cd === 0) {
-                    var randNumGen = new RNG(currLoc+'orders');
-                    ret.push([currLoc, randNumGen.uniform()]);
-                } else {
-                    for (var ai = bds[cd-1][0]; ai <= bds[cd-1][1]; ai++) {
-                        var loc = [ai].concat(currLoc);
-                        getOrders(d, bds, ret, loc, cd-1);
-                    }
-                }
-            }
-
-            var boundaries = [];
-            for (var ai = 0; ai < p.dim; ai++) {
-                var left = Math.floor(value[ai]/p.res);
-                var right = left + 2*p.radius;
-                boundaries.push([left, right]);
-            }
-
-            var orders = [];
-            getOrders(p.dim, boundaries, orders);
-            orders.sort(function(a, b) {
-                return b[1] - a[1];
-            });
-
-            var idxs = [];
-            for (var ai = 0; ai < p.w; ai++) {
-                var randNumGen = new RNG(orders[ai][0]+'indices');
-                var idx = Math.floor(randNumGen.uniform()*p.n);
-                idxs.push(idx);
-            }
-
-            var out = [];
-            for (var ai = 0; ai < p.n; ai++) out.push(false);
-            for (var ai = 0; ai < idxs.length; ai++) {
-                out[idxs[ai]] = true;
-            }
-
-            return out;
-        default:
-            var out = [false];
-            return out;
-    }
-}
-
 /* TODO: abstract the render parameters out so you can use it for
          multiple canvases */
 
@@ -350,7 +267,90 @@ function Layer(settings) {
         predictionFog: settings.predictionFog || 40
     };
 
-    this.SP = new SpatialPooler(this.cfg);
+    this.encodeFn = function(type, cfg, value) {
+        var p = cfg[type];
+        switch (type) {
+            case 'scalar':
+                var buckets = 1 + (p.n - p.w);
+                var bucket = Math.floor(buckets*(value-p.min)/(p.max-p.min));
+                bucket = Math.min(Math.max(0, bucket), buckets-1);
+
+                var out = [];
+                for (var ai = 0; ai < bucket; ai++) out.push(false);
+                for (var ai = 0; ai < p.w; ai++) out.push(true);
+                for (var ai = 0; ai < p.n-(bucket+p.w); ai++) out.push(false);
+
+                return out;
+            case 'alphanum':
+                function randCycle(num, range) {
+                    var a = 71693, b = 4549;
+                    return (a*num+b)%range;
+                }
+                
+                var AVal = 'A'.charCodeAt(0);
+                var categoryIdx = value.toUpperCase().charCodeAt(0) - AVal;
+                if (categoryIdx < 0) categoryIdx += 43; //put digits at the end
+
+                var curr = randCycle(categoryIdx, 1000*p.n);
+                var out = [];
+                for (var ai = 0; ai < p.n; ai++) out.push(false);
+                for (var ai = 0; ai < p.w; ai++) {
+                    out[curr%p.n] = true;
+                    curr = randCycle(curr, 24499);
+                }
+
+                return out; //guaranteed to have <= w "trues" guaranteed
+            case 'coordinate':
+                function getOrders(d, bds, ret, currLoc, cd) {
+                    if (arguments.length < 4) {
+                        currLoc = [];
+                        cd = d;
+                    }
+                    if (cd === 0) {
+                        var randNumGen = new RNG(currLoc+'orders');
+                        ret.push([currLoc, randNumGen.uniform()]);
+                    } else {
+                        for (var ai = bds[cd-1][0]; ai <= bds[cd-1][1]; ai++) {
+                            var loc = [ai].concat(currLoc);
+                            getOrders(d, bds, ret, loc, cd-1);
+                        }
+                    }
+                }
+
+                var boundaries = [];
+                for (var ai = 0; ai < p.dim; ai++) {
+                    var left = Math.floor(value[ai]/p.res);
+                    var right = left + 2*p.radius;
+                    boundaries.push([left, right]);
+                }
+
+                var orders = [];
+                getOrders(p.dim, boundaries, orders);
+                orders.sort(function(a, b) {
+                    return b[1] - a[1];
+                });
+
+                var idxs = [];
+                for (var ai = 0; ai < p.w; ai++) {
+                    var randNumGen = new RNG(orders[ai][0]+'indices');
+                    var idx = Math.floor(randNumGen.uniform()*p.n);
+                    idxs.push(idx);
+                }
+
+                var out = [];
+                for (var ai = 0; ai < p.n; ai++) out.push(false);
+                for (var ai = 0; ai < idxs.length; ai++) {
+                    out[idxs[ai]] = true;
+                }
+
+                return out;
+            default:
+                var out = [false];
+                return out;
+        }
+    };
+
+    this.SP = new SpatialPooler(this.cfg, this.encodeFn);
     this.TP = new TemporalPooler(this.cfg);
 }
 Layer.prototype.sense = function(rawInp) {
@@ -685,8 +685,9 @@ TemporalPooler.prototype.chooseDumbestCell = function(colId){
 
 /* TODO: figure out why occasionally, there's only 1/2025 active columns */
 
-function SpatialPooler(cfg) {
+function SpatialPooler(cfg, encodeFn) {
     this.cfg = cfg;
+    this.encodeFn = encodeFn;
     this.columns = [];
 
     var s = cfg.encoderCfg[cfg.encoder].n; //len of input in bits
@@ -699,7 +700,7 @@ function SpatialPooler(cfg) {
     }
 }
 SpatialPooler.prototype.process = function(inp) {
-    var inpSDR = encode(this.cfg.encoder, this.cfg.encoderCfg, inp);
+    var inpSDR = this.encodeFn(this.cfg.encoder, this.cfg.encoderCfg, inp);
     var sdr = [];
 
     //activate the correct columns and collect data about it
@@ -771,7 +772,7 @@ SpatialPooler.prototype.process = function(inp) {
     return sdr;
 };
 SpatialPooler.prototype.getSDR = function(rawInp) {
-    var inpSDR = encode(this.cfg.encoder, this.cfg.encoderCfg, rawInp);
+    var inpSDR = this.encodeFn(this.cfg.encoder, this.cfg.encoderCfg, rawInp);
     var sdr = [];
     var overlaps = this.getOverlaps(inpSDR);
     var thresh = this.getOvlpThreshold(overlaps);
