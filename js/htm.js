@@ -5,7 +5,7 @@
 | @author Anthony  |
 | @version 0.1     |
 | @date 2014/07/12 |
-| @edit 2014/12/09 |
+| @edit 2014/12/11 |
 \******************/
 
 /**********
@@ -29,6 +29,8 @@ var INAC = 1446; //"" inactive
 var NEW = 438; //indicates that a synChange is for a new synapse
 var PRNF = true; //positive reinforcement
 var NRNF = false; //negative reinforcement
+var SKIP = false; //skip computing the learning activations
+var BOTH = true; //compute both active and learning activations
 
 var alphanum = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
@@ -60,7 +62,7 @@ function initHTM() {
     pattern = (
         'if0only0i0had0two0dogs0and0i0wasnt0allergic0if0only0i0had0two0dogs0and0i0wasnt0allergic0if0only0i0had0two0dogs0and0i0wasnt0allergic0if0only0i0had0two0dogs0and0i0wasnt0allergic0if0only0i0had0two0dogs0and0i0wasnt0allergic0if0only0i0had0two0dogs0and0i0wasnt0allergic0if0only0i0had0two0dogs0and0i0wasnt0allergic0if0only0i0had0two0dogs0and0i0wasnt0allergic0'
     ).split('');
-
+    
     //initialize the brain (SP and TP chained together)
     brain = new Layer({
         encoder: 'alphanum',
@@ -254,15 +256,15 @@ function Layer(settings) {
         permDec: settings.permDec || 0.03,
 
         //number of cells in each column
-        cellsPerCol: settings.cellsPerCol || 9,
+        cellsPerCol: settings.cellsPerCol || 16,
         //max # distal dendrites per cell
         maxDistDendrites: settings.maxDistDendrites || 8,
         //controls how many synapses are added
         numNewSyn: settings.numNewSyn || 14,
         //# active synapses for a segment to be active
-        activityThresh: settings.activityThresh || 9,
+        actvThresh: settings.actvThresh || 10,
         //min num active synapses for learning selection
-        minSynThresh: settings.minSynThresh || 6,
+        minSynThresh: settings.minSynThresh || 7,
         //how far into the past the pred routine considers
         predictionFog: settings.predictionFog || 40
     };
@@ -365,12 +367,21 @@ Layer.prototype.predict = function() {
 function TemporalPooler(cfg) {
     this.cfg = cfg;
     this.synapseBank = [];
+
+    this.synActv = {};
+    this.wereActiveCells = [];
+    this.activeCells = [];
+    this.wereLearningCells = [];
+    this.learningCells = [];
+    this.predictedSegs = {};
+
     this.cols = [];
     for (var ai = 0; ai < this.cfg.numCols; ai++) {
         this.cols.push({});
         this.cols[ai].cells = [];
         for (var bi = 0; bi < this.cfg.cellsPerCol; bi++) {
             this.cols[ai].cells.push(new Cell(
+                ai, bi, //column id and cell id
                 this.cfg.numNewSyn, this.cfg.initPerm,
                 this.cfg.permInc, this.cfg.permDec,
                 this.cfg.predictionFog
@@ -379,13 +390,58 @@ function TemporalPooler(cfg) {
     }
 }
 TemporalPooler.prototype.process = function(SDR, rawInp) {
+    this.getAllSynActvs(BE4, 0, SKIP); //active only!
     this.activateCells(SDR, rawInp);
+    this.getAllSynActvs(NOW, this.cfg.permThresh, BOTH); //active + learning
     this.predictAndLearn();
     this.applyAllSynChanges(); //only where applicable
     this.timeTravel(); //advance to the next time step
 
 /* TODO: return something relevant */
 
+};
+TemporalPooler.prototype.getAllSynActvs = function(t, thresh, cmpLrn) {
+    //defaults to t === BE4
+    var arrs = [this.wereActiveCells, this.wereLearningCells], idx = 0;
+    if (t === NOW) {
+        arrs[0] = this.activeCells;
+        arrs[1] = this.learningCells;
+        idx = 1;
+    }
+    for (var ai = 0; ai < arrs.length; ai++) {
+        if (!cmpLrn && ai === 1) break; //skip learning activations
+
+        for (var li = 0; li < arrs[ai].length; li++) {
+            var cellLoc = arrs[ai][li];
+            var cell = this.cols[cellLoc[0]].cells[cellLoc[1]];
+            var synOrigins = Object.keys(cell.incomingSyns);
+            for (var oi = 0; oi < synOrigins.length; oi++) {
+                var synOrigin = synOrigins[oi];
+
+                if (cell.incomingSyns[synOrigin] < thresh) continue;
+                var synIdnt = synOrigin+':'+thresh;
+                if (!this.synActv.hasOwnProperty(synIdnt)) {
+                    //[wereActive, active, wereLearn, learn]
+                    this.synActv[synIdnt] = [0, 0, 0, 0];
+                }
+                //the learning actvs are offset by 2 and they're index at 1
+                this.synActv[synIdnt][idx+2*ai] += 1;
+
+                //if the current activity being probed is the kind that
+                //leads to predictions...
+                if (ai === 0 && t === NOW &&
+                    thresh === this.cfg.permThresh) {
+                    //then check to see if the cell would be predicted
+                    if (this.synActv[synIdnt][1] >= this.cfg.actvThresh) {
+                        var info = synIdnt.split(':');
+                        this.predictedSegs[
+                            info[0]+':'+info[1]+':'+info[2]
+                        ] = true;
+                    }
+                }
+            }
+        }
+    }
 };
 TemporalPooler.prototype.predictFFInp = function() {
     var probs = {};
@@ -396,10 +452,10 @@ TemporalPooler.prototype.predictFFInp = function() {
         for (var ci = 0; ci < this.cfg.cellsPerCol; ci++) {
             var cell = this.cols[ki].cells[ci];
             if (cell.predicted) {
-                for (var dp in cell.lookup) {
-                    if (cell.lookup.hasOwnProperty(dp)) {
-                        probs[dp] += cell.lookup[dp][0];
-                    }
+                var dps = Object.keys(cell.lookup);
+                for (var di = 0; di < dps.length; di++) {
+                    var dp = dps[di];
+                    probs[dp] += cell.lookup[dp][0];
                 }
             }
         }
@@ -407,7 +463,9 @@ TemporalPooler.prototype.predictFFInp = function() {
 
     var highestProb = -1;
     var mostLikelyDataPoint = -1;
-    for (var dp in probs) {
+    var dps = Object.keys(probs);
+    for (var di = 0; di < dps.length; di++) {
+        var dp = dps[di];
         if (probs[dp] > highestProb) {
             highestProb = probs[dp];
             mostLikelyDataPoint = dp;
@@ -427,11 +485,13 @@ TemporalPooler.prototype.activateCells = function(SDR, rawInp) {
             var cell = this.cols[kId].cells[ci];
             if (cell.wasPredicted) {
                 cell.active = true;
+                this.activeCells.push([kId, ci]);
                 activatedCell = true;
                 cell.observe(rawInp);
 
                 if (cell.predictingSegWasLearn) {
                     cell.learning = true;
+                    this.learningCells.push([kId, ci]);
                     choseLearning = true;
                 }
             }
@@ -443,6 +503,7 @@ TemporalPooler.prototype.activateCells = function(SDR, rawInp) {
             for (var ci = 0; ci < this.cols[kId].cells.length; ci++) {
                 var cell = this.cols[kId].cells[ci];
                 cell.active = true;
+                this.activeCells.push([kId, ci]);
                 cell.observe(rawInp);
             }
 
@@ -455,39 +516,30 @@ TemporalPooler.prototype.activateCells = function(SDR, rawInp) {
     }
 };
 TemporalPooler.prototype.predictAndLearn = function() {
+    //clear old predictions
     for (var ki = 0; ki < this.cols.length; ki++) {
         for (var ci = 0; ci < this.cols[ki].cells.length; ci++) {
             var cell = this.cols[ki].cells[ci];
-            var dendrites = cell.distalDendrites;
             cell.predicted = false; //not yet it isn't!
             cell.predictingSegWasLearn = false; //don't know yet
+        }
+    }
 
-            //check all the distal dendrite segments
-            for (var seg = 0; seg < dendrites.length; seg++) {
-                var segment = dendrites[seg];
+    //go through the cells you know are predicted
+    var segs = Object.keys(this.predictedSegs);
+    for (var pi = 0; pi < segs.length; pi++) {
+        var info = segs[pi].split(':');
+        var cell = this.cols[info[0]].cells[info[1]];
+        var segment = cell.distalDendrites[info[2]];
+        var activity = this.getSynActivity(
+            cell, info[2], NOW, this.cfg.permThresh
+        );
 
-/* TODO: reverse this activity model. base it on the ACTIVE columns and
-         not on random cells that *may* be active; test to see how much
-         more efficient this is. go through each active column and make
-         a 2D array that keeps track of the activities of each cell;
-         when you add to the array, check to see if the element you're
-         adding to surpasses the activity threshold; if so, add it to a
-         list of predicted cells; each cell's state includes the current
-         activity of each of its active dendrites; ONLY UPDATE THE ACTIVE
-         ONES! you don't really care about the others. Question: can this
-         revised model still work with learning? Look into this later. */
-
-                var activity = this.getSynActivity(
-                    cell, seg, NOW, this.cfg.permThresh
-                );
-
-                //if the number of active synapses on this segment
-                //exceeds the activity ratio, then the segment is
-                //active -> predict the column
-                if (activity[0] >= this.cfg.activityThresh) {
-                    this.predictCell(cell, activity, seg);
-                }
-            }
+        //if the number of active synapses on this segment
+        //exceeds the activity ratio, then the segment is
+        //active -> predict the column
+        if (activity[0] >= this.cfg.actvThresh) {
+            this.predictCell(cell, activity, info[2]);
         }
     }
 };
@@ -498,7 +550,7 @@ TemporalPooler.prototype.proposeSynChanges = function(
 
     var seg = cell.distalDendrites[segId];
     var activeSynLocs = [];
-    for (var si = 0; si < seg.length; si++) {
+    for (var si = 0; si < seg.length; si++) { //iterate synapses
         var connCol = this.cols[seg[si][0]];
         var connCell = connCol.cells[seg[si][1]];
         if (t === NOW && connCell.active ||
@@ -532,15 +584,22 @@ TemporalPooler.prototype.applyAllSynChanges = function() {
         for (var ci = 0; ci < this.cols[ki].cells.length; ci++) {
             var cell = this.cols[ki].cells[ci];
             if (cell.learning) {
-                cell.applySynChanges(PRNF);
+                this.applySynChanges(cell, PRNF);
             } else if (cell.wasPredicted && !cell.predicted) {
-                cell.applySynChanges(NRNF);
+                this.applySynChanges(cell, NRNF);
             }
         }
     }
 };
 TemporalPooler.prototype.timeTravel = function() {
     this.synapseBank = []; //clean up the old potential synapse list
+    this.wereActiveCells = this.activeCells; 
+    this.activeCells = []; //no cells are active now
+    this.wereLearningCells = this.learningCells;
+    this.learningCells = []; //no cells are learning too
+    this.synActv = {}; //get rid of all the old activities
+    this.predictedSegs = {}; //get rid of the old predicted cells
+    //clean up the dendrite segment activities list too!!!
     for (var ki = 0; ki < this.cols.length; ki++) {
         for (var ci = 0; ci < this.cols[ki].cells.length; ci++) {
             //move all the cells forward in time
@@ -566,9 +625,10 @@ TemporalPooler.prototype.teachAPromisingCell = function(colId) {
     var learningIds = this.chooseLearningCell(colId);
     var lCell = this.cols[colId].cells[learningIds[0]];
     lCell.learning = true;
+    this.learningCells.push([colId, learningIds[0]]);
 
     if (learningIds[1] === -1) { //no good segments? grow one.
-        lCell.growDistalDendrite(this.synapseBank);
+        this.growDistalDendrite(lCell, this.synapseBank);
         if (lCell.distalDendrites.length > this.cfg.maxDistDendrites) {
             lCell.distalDendrites.shift();
         }
@@ -578,42 +638,74 @@ TemporalPooler.prototype.teachAPromisingCell = function(colId) {
         );
     }
 };
-TemporalPooler.prototype.getSynActivity = function(cell, gId, t, conThresh) {
-    var activeSyns = 0;
-    var learningSyns = 0;
-    var connectedSyns = 0; //# synapses w/ perm >= conThresh
-    var segment = cell.distalDendrites[gId];
-    for (var syn = 0; syn < segment.length; syn++) {
-        var endLoc = segment[syn];
-        var connectedCell = this.cols[endLoc[0]].cells[endLoc[1]];
-        if (segment[syn][2] >= conThresh) {
-            connectedSyns++;
-            if (connectedCell.active && t === NOW ||
-                connectedCell.wasActive && t === BE4) activeSyns++;
-            if (connectedCell.learning && t === NOW ||
-                connectedCell.wasLearning && t === BE4) learningSyns++;
+TemporalPooler.prototype.growDistalDendrite = function(cell, synBank) {
+    var dendrite = [];
+    var numSyns = this.cfg.numNewSyn;
+    var newSynIds = getRandPerm(synBank.length, numSyns);
+
+/* TODO: why are some dendrites so empty? */
+
+    if (newSynIds.length === 0) return;
+    for (var si = 0; si < newSynIds.length; si++) {
+        var sb = synBank[newSynIds[si]];
+        dendrite.push([
+            sb[0], sb[1]
+        ]);
+
+        var connCell = this.cols[sb[0]].cells[sb[1]];
+        connCell.incomingSyns[
+            cell.colId+':'+cell.cellId+':'+cell.distalDendrites.length
+        ] = this.cfg.initPerm;
+    }
+    cell.distalDendrites.push(dendrite);
+};
+TemporalPooler.prototype.applySynChanges = function(cell, posReinforce) {
+    for (var ci = 0; ci < cell.synChanges; ci++) {
+        var change = cell.synChanges[ci];
+        var seg = cell.distalDendrites[change[1]];
+        var syn = seg[change[2]];
+        var synOrigin = cell.colId+':'+cell.cellId+':'+change[1];
+        var connCell = this.cols[syn[0]].cells[syn[1]];
+        switch (change[0]) {
+            case ACTV:
+                if (posReinforce) {
+                    connCell.incomingSyns[synOrigin] += this.cfg.permInc;
+                } else {
+                    connCell.incomingSyns[synOrigin] -= this.cfg.permDec;
+                }
+                break;
+            case INAC:
+                if (posReinforce) {
+                    connCell.incomingSyns[synOrigin] -= this.cfg.permDec;
+                }
+                break;
+            case NEW: //add synapses to this seg
+/* TODO: figure out why this code is never executed!!! */
+                //seg.push([//
+                //    change[2], change[3], this.initPerm//
+                //]);//
+                break;
         }
     }
-
-/* TODO: currently, this program runs in k*c*g*s where k is # cols, c is
-         # cells/col, g is #segments/cell, and s is #synapses/seg. It
-         iterates all synapses EVERY SINGLE ITERATION! Yuck. Instead of
-         following OUTGOING connections like you currently do, pay
-         attention to INCOMING ones. Then, you'll only need to check
-         a*g*s synapses per iteration on average. This is kc/a times
-         faster, ~= 1000x speed boost! Event driven HTM? Cells emit
-         an event when they become active, moving the program along?
-         Perfect for Node.js! Test it out. */
-
-    return [activeSyns, connectedSyns, learningSyns];
+    cell.synChanges = []; //changes applied so empty queue
+};
+TemporalPooler.prototype.getSynActivity = function(cell, gId, t, conThresh) {
+    var synIdnt = cell.colId+':'+cell.cellId+':'+gId+':'+conThresh;
+    if (this.synActv.hasOwnProperty(synIdnt)) {
+        var actv = this.synActv[synIdnt];
+        if (t === BE4) return [actv[0], actv[2]];
+        else if (t === NOW) return [actv[1], actv[3]];
+    } else {
+        return [0, 0];
+    }
 };
 TemporalPooler.prototype.predictCell = function(cell, cellsActivity, seg) {
     cell.predicted = true;
 
     //figure out if this segment (this cell's predicting
     //segment) would be activated by learning cells
-    var learningActivity = cellsActivity[2];
-    if (learningActivity >= this.cfg.activityThresh) {
+    var learningActivity = cellsActivity[1];
+    if (learningActivity >= this.cfg.actvThresh) {
         cell.predictingSegWasLearn = true;
     }
 
@@ -862,7 +954,11 @@ Column.prototype.dopePermanences = function(amt) {
     }
 };
 
-function Cell(numNewSyn, initPerm, permInc, permDec, predictionFog) {
+function Cell(
+    colId, cellId, numNewSyn, initPerm, permInc, permDec, predictionFog
+) {
+    this.colId = colId;
+    this.cellId = cellId;
     this.active = false;
     this.learning = false;
     this.predicted = false;
@@ -870,7 +966,8 @@ function Cell(numNewSyn, initPerm, permInc, permDec, predictionFog) {
     this.wasLearning = false;
     this.wasPredicted = false;
     this.predictingSegWasLearn = false;
-    this.distalDendrites = [];
+    this.distalDendrites = []; //keeps track of its own
+    this.incomingSyns = {};
     this.synChanges = [];
     this.numNewSyn = numNewSyn;
     this.initPerm = initPerm;
@@ -888,64 +985,22 @@ function Cell(numNewSyn, initPerm, permInc, permDec, predictionFog) {
 }
 Cell.prototype.observe = function(rawInp) {
     //modifies the entire lookup table
-    for (var dp in this.lookup) {
-        if (this.lookup.hasOwnProperty(dp)) {
-            var val = (dp === rawInp) ? 1 : 0;
-            var table = this.lookup[dp];
-            var n = table[1].length;
-            if (n < this.predictionFog) { //still hasn't cleared the fog
-                table[0] = (n*table[0]+val)/(n+1);
-                table[1].push(val);
-            } else { //table is filled up, conveyer belt now
-                table[0] -= table[1][0]/n;
-                table[0] += val/n;
-                table[1].shift();
-                table[1].push(val);
-            }
+    var dps = Object.keys(this.lookup);
+    for (var di = 0; di < dps.length; di++) {
+        var dp = dps[di];
+        var val = (dp === rawInp) ? 1 : 0;
+        var table = this.lookup[dp];
+        var n = table[1].length;
+        if (n < this.predictionFog) { //still hasn't cleared the fog
+            table[0] = (n*table[0]+val)/(n+1);
+            table[1].push(val);
+        } else { //table is filled up, conveyer belt now
+            table[0] -= table[1][0]/n;
+            table[0] += val/n;
+            table[1].shift();
+            table[1].push(val);
         }
     }
-};
-Cell.prototype.growDistalDendrite = function(synBank) {
-    var dendrite = [];
-    var numSyns = this.numNewSyn;
-    var newSynIds = getRandPerm(synBank.length, numSyns);
-
-/* TODO: why are some dendrites so empty? */
-
-    if (newSynIds.length === 0) return;
-    for (var si = 0; si < newSynIds.length; si++) {
-        var sb = synBank[newSynIds[si]];
-        dendrite.push([
-            sb[0], sb[1], this.initPerm
-        ]);
-    }
-    this.distalDendrites.push(dendrite);
-};
-Cell.prototype.applySynChanges = function(posReinforce) {
-    for (var ci = 0; ci < this.synChanges; ci++) {
-        var change = this.synChanges[ci];
-        var seg = this.distalDendrites[change[1]];
-        switch (change[0]) {
-            case ACTV:
-                if (posReinforce) {
-                    seg[change[2]][2] += this.permInc;
-                } else {
-                    seg[change[2]][2] -= this.permDec;
-                }
-                break;
-            case INAC:
-                if (posReinforce) {
-                    seg[change[2]][2] -= this.permDec;
-                }
-                break;
-            case NEW:
-                seg.push([
-                    change[2], change[3], this.initPerm
-                ]);
-                break;
-        }
-    }
-    this.synChanges = []; //changes applied so empty queue
 };
 
 /********************
