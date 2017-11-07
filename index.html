@@ -5,6 +5,24 @@
         <title>Hierarchical Temporal Memory System</title>
 
         <link rel="stylesheet" type="text/css" href="css/toast.css">
+        <style>
+        #user-input {
+            font-family: Monospace;
+            background-color: #EFEFEF;
+            width: 95%;
+            color: rgba(0, 0, 0, 0);
+            cursor: pointer;
+        }
+        #user-input:focus {
+            outline: none;
+            cursor: auto;
+            border-left: 2px solid rgba(0, 0, 0, 0);
+            -webkit-animation: blink .5s step-end infinite alternate;
+        }
+        @-webkit-keyframes blink {
+            50% { border-left-color: black; }
+        }
+        </style>
 
         <script src="js/rng.js"></script>
         <script src="js/htm.js"></script>
@@ -15,20 +33,27 @@
                 <div class="unit span-grid">
                     <h2 style="text-align: center">uition.js -- Hierarchical Temporal Memory</h2>
                     <hr>
-                    <div class="unit two-of-three">
-                        <div class="unit four-of-five" style="text-align: center">
-                            <h3>Temporal Memory</h3>
-                            <canvas id="canvas"></canvas>
-                        </div>
-                        <div class="unit one-of-five">
-                            <h3>Real Time Stats</h3>
-                            t: <span id="time"></span><br>
-                            input: <span id="input" style="font-family: Monospace"></span><br>
-                            prediction: <span id="pred" style="font-family: Monospace"></span><br>
-                            cols predicted: <span id="pred-actv-pct"></span>
-                            inps predicted: <span id="pred-inp-pct"></span>
-                        </div>
-                    </div>
+                </div>
+                <div class="unit three-of-five" style="text-align: center">
+                    <h3>Temporal Memory</h3>
+                    <canvas id="canvas"></canvas>
+                </div>
+                <div class="unit two-of-five">
+                    <h3>Real Time Stats</h3>
+                    <i>t:</i><span id="time"></span><br><br>
+
+                    <i>input:</i>
+                    <br>
+                    <span id="input" style="font-family: Monospace; word-break: break-all"></span>
+                    <span id="user-input" contenteditable="true" style="display: inline-block; width: 16px;"></span><br>
+
+                    <i>prediction:</i>
+                    <br>
+                    <span id="pred" style="font-family: Monospace; word-break: break-all"></span><br><br>
+
+                    cols predicted: <span id="pred-actv-pct"></span><br><br>
+
+                    inps predicted: <span id="pred-inp-pct"></span>
                 </div>
             </div>
         </div>
